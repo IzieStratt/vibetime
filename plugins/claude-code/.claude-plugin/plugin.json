@@ -1,0 +1,6 @@
+{
+  "name": "vibetime",
+  "version": "0.1.0",
+  "description": "Passive, privacy-friendly AI time tracking (attended time, not agent runtime).",
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,92 @@
+package presence
+
+import (
+	"context"
+	"errors"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/IzieStratt/vibetime/internal/event"
+)
+
+func TestParsers(t *testing.T) {
+	if d, err := parseIoreg(`  | |   "HIDIdleTime" = 5000000000`); err != nil || d != 5*time.Second {
+		t.Fatal(d, err)
+	}
+	if _, err := parseIoreg("nothing"); err == nil {
+		t.Fatal("ioreg")
+	}
+	if d, err := parseMillis("1500\n"); err != nil || d != 1500*time.Millisecond {
+		t.Fatal(d, err)
+	}
+	if _, err := parseMillis("x"); err == nil {
+		t.Fatal("millis")
+	}
+	if d, err := parseGdbus("(uint64 2000,)"); err != nil || d != 2*time.Second {
+		t.Fatal(d, err)
+	}
+	if _, err := parseGdbus("()"); err == nil {
+		t.Fatal("gdbus")
+	}
+}
+
+func TestWatcherTransitions(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	idle := []time.Duration{time.Second, 3 * time.Minute, 4 * time.Minute, time.Second, 5 * time.Minute}
+	var i int
+	var got []event.Event
+	w := &Watcher{
+		Idle:      func() (time.Duration, error) { d := idle[i]; i++; return d, nil },
+		Threshold: 2 * time.Minute,
+		Now:       func() time.Time { return now },
+		Emit:      func(e event.Event) { got = append(got, e) },
+	}
+	for range idle {
+		w.Tick()
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 idle events (one per away period), got %d", len(got))
+	}
+	if !got[0].Time.Equal(now.Add(-3*time.Minute)) || got[0].Kind != event.Idle {
+		t.Fatalf("idle should be backdated to last input: %+v", got[0])
+	}
+	if err := got[0].Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWatcherErrorEmitsNothing(t *testing.T) {
+	w := &Watcher{Idle: func() (time.Duration, error) { return 0, errors.New("x") }, Threshold: time.Second,
+		Now: time.Now, Emit: func(event.Event) { t.Fatal("emitted") }}
+	w.Tick()
+}
+
+func TestRunStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	n := 0
+	w := &Watcher{Idle: func() (time.Duration, error) { n++; return 0, nil }, Threshold: time.Hour,
+		Interval: 5 * time.Millisecond, Now: time.Now, Emit: func(event.Event) {}}
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	<-done
+	if n == 0 {
+		t.Fatal("never ticked")
+	}
+}
+
+// Real OS backend: macOS and Windows always have an idle counter; Linux CI may be headless.
+func TestSystemIdleReal(t *testing.T) {
+	d, err := System()
+	if err != nil {
+		if runtime.GOOS == "linux" {
+			t.Skip(err)
+		}
+		t.Fatal(err)
+	}
+	if d < 0 || d > 30*24*time.Hour {
+		t.Fatalf("implausible idle %v", d)
+	}
+}

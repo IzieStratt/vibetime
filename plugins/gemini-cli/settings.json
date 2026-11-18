@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "BeforeAgent": [{ "hooks": [{ "type": "command", "command": "vibetime hook gemini-cli" }] }],
+    "AfterTool":   [{ "matcher": "*", "hooks": [{ "type": "command", "command": "vibetime hook gemini-cli" }] }],
+    "AfterAgent":  [{ "hooks": [{ "type": "command", "command": "vibetime hook gemini-cli" }] }]
+  }
+}
