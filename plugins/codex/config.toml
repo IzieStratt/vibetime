@@ -1,0 +1,2 @@
+# Add to ~/.codex/config.toml. Codex appends the JSON payload as the last argument.
+notify = ["vibetime", "hook", "codex"]
