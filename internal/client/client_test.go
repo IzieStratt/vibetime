@@ -13,7 +13,9 @@ import (
 	"github.com/IzieStratt/vibetime/internal/event"
 )
 
-func ev(p string) event.Event { return event.Event{Time: time.Unix(100, 0).UTC(), Kind: event.Prompt, Project: p} }
+func ev(p string) event.Event {
+	return event.Event{Time: time.Unix(100, 0).UTC(), Kind: event.Prompt, Project: p}
+}
 
 func TestSpoolThenFlush(t *testing.T) {
 	var got atomic.Int32

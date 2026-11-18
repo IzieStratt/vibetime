@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -14,11 +15,13 @@ import (
 
 	"github.com/IzieStratt/vibetime/internal/api"
 	"github.com/IzieStratt/vibetime/internal/client"
+	"github.com/IzieStratt/vibetime/internal/event"
 	"github.com/IzieStratt/vibetime/internal/hooks"
+	"github.com/IzieStratt/vibetime/internal/presence"
 	"github.com/IzieStratt/vibetime/internal/store"
 )
 
-const DefaultAddr = "127.0.0.1:7878"
+const DefaultAddr = "127.0.0.1:47391"
 
 func dataDir() string {
 	if d := os.Getenv("VIBETIME_HOME"); d != "" {
@@ -87,6 +90,9 @@ func serve(args []string, stderr io.Writer) int {
 		return 1
 	}
 	defer s.Close()
+	w := &presence.Watcher{Idle: presence.System, Threshold: 2 * time.Minute, Interval: 15 * time.Second, Now: time.Now,
+		Emit: func(e event.Event) { s.Append(e) }}
+	go w.Run(context.Background())
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{Store: s, Now: time.Now}).Handler(), ReadHeaderTimeout: 5 * time.Second}
 	fmt.Fprintf(stderr, "vibetime listening on %s (db %s)\n", *addr, *db)
 	fmt.Fprintln(stderr, srv.ListenAndServe())
