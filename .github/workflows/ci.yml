@@ -44,3 +44,13 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
       - run: VIBETIME_LOAD=1 go test -run LoadBudget -v ./internal/server
+  linux-presence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xprintidle xdotool
+      - run: |
+          Xvfb :99 -screen 0 1024x768x24 & sleep 1
+          DISPLAY=:99 VIBETIME_PRESENCE_INPUT="xdotool mousemove 10 10 mousemove 200 200" go test -run 'SystemIdle' -v ./internal/presence
