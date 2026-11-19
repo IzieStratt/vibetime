@@ -19,6 +19,7 @@ import (
 	"github.com/IzieStratt/vibetime/internal/hooks"
 	"github.com/IzieStratt/vibetime/internal/presence"
 	"github.com/IzieStratt/vibetime/internal/store"
+	"github.com/IzieStratt/vibetime/internal/syncer"
 )
 
 const DefaultAddr = "127.0.0.1:47391"
@@ -53,11 +54,15 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 		return serve(ctx, args[1:], stderr)
 	case "hook":
 		return hook(args[1:], stdin, stderr)
+	case "login":
+		return login(args[1:], stderr)
+	case "submit":
+		return submit(args[1:], stderr)
 	case "version":
 		fmt.Fprintln(stderr, "vibetime 0.1.0")
 		return 0
 	}
-	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|version]\n")
+	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|login|submit|version]\n")
 	return 2
 }
 
@@ -100,6 +105,11 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go w.Run(ctx)
+	if cfg, err := syncer.LoadConfig(dataDir()); err == nil && cfg.Server != "" {
+		sy := &syncer.Syncer{Store: s, Cfg: cfg, Now: time.Now}
+		go sy.Run(time.Minute, ctx.Done(), func(err error) { fmt.Fprintln(stderr, "sync:", err) })
+		fmt.Fprintf(stderr, "syncing to %s as device %s\n", cfg.Server, cfg.Device)
+	}
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{Store: s, Now: time.Now}).Handler(), ReadHeaderTimeout: 5 * time.Second}
 	fmt.Fprintf(stderr, "vibetime listening on %s (db %s)\n", *addr, *db)
 	errc := make(chan error, 1)
@@ -137,6 +147,80 @@ func hook(args []string, stdin io.Reader, stderr io.Writer) int {
 	os.MkdirAll(dataDir(), 0o700)
 	if err := client.New(agentURL(), filepath.Join(dataDir(), "spool.jsonl")).Send(evs); err != nil {
 		fmt.Fprintln(stderr, "vibetime hook:", err)
+	}
+	return 0
+}
+
+func login(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	srv := fs.String("server", "", "server URL")
+	handle := fs.String("handle", "", "new account handle (open-signup servers)")
+	token := fs.String("token", "", "existing API token (from the website)")
+	if err := fs.Parse(args); err != nil || *srv == "" || (*handle == "") == (*token == "") {
+		fmt.Fprintln(stderr, "usage: vibetime login -server URL (-handle NAME | -token TOKEN)")
+		return 2
+	}
+	var cfg syncer.Config
+	var err error
+	if *token != "" {
+		err = syncer.SaveConfig(dataDir(), syncer.Config{Server: *srv, Token: *token})
+		if err == nil {
+			cfg, err = syncer.LoadConfig(dataDir())
+		}
+	} else {
+		cfg, err = syncer.Login(dataDir(), *srv, *handle, nil)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "login:", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "logged in to %s (device %s); restart `vibetime serve` to start syncing\n", cfg.Server, cfg.Device)
+	return 0
+}
+
+func submit(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("submit", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	project := fs.String("project", "", "project name")
+	repo := fs.String("repo", "", "repository, e.g. github.com/you/project")
+	from := fs.String("from", "", "start (RFC3339)")
+	to := fs.String("to", "", "end (RFC3339, default now)")
+	prompts := fs.Bool("include-prompts", false, "upload this project's prompt text (otherwise only hashes and lengths)")
+	db := fs.String("db", filepath.Join(dataDir(), "events.db"), "SQLite path")
+	if err := fs.Parse(args); err != nil || *project == "" || *from == "" {
+		fmt.Fprintln(stderr, "usage: vibetime submit -project NAME -repo REPO -from RFC3339 [-to RFC3339] [-include-prompts]")
+		return 2
+	}
+	f, err1 := time.Parse(time.RFC3339, *from)
+	t := time.Now()
+	var err2 error
+	if *to != "" {
+		t, err2 = time.Parse(time.RFC3339, *to)
+	}
+	if err1 != nil || err2 != nil {
+		fmt.Fprintln(stderr, "submit: times must be RFC3339, e.g. 2026-11-18T15:00:00Z")
+		return 2
+	}
+	cfg, err := syncer.LoadConfig(dataDir())
+	if err != nil {
+		fmt.Fprintln(stderr, "submit: not logged in (run vibetime login)")
+		return 1
+	}
+	s, err := store.Open(*db)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer s.Close()
+	sub, err := (&syncer.Syncer{Store: s, Cfg: cfg, Now: time.Now}).Submit(*project, hooks.NormalizeRepo(*repo), f, t, *prompts)
+	if err != nil {
+		fmt.Fprintln(stderr, "submit:", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "submission %d: %s, %.1fh verified, risk %d\n", sub.ID, sub.Status, float64(sub.VerifiedSeconds)/3600, sub.Risk)
+	for _, fl := range sub.Result.Flags {
+		fmt.Fprintf(stderr, "  [%s] %s\n", fl.Code, fl.Detail)
 	}
 	return 0
 }

@@ -2,6 +2,8 @@
 package event
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -35,6 +37,13 @@ type Event struct {
 	LinesAdded   int       `json:"lines_added,omitempty"`
 	LinesRemoved int       `json:"lines_removed,omitempty"`
 	PromptText   string    `json:"prompt_text,omitempty"`
+	// PromptSHA is sha256(PromptText). The chain commits to this hash, not the text,
+	// so a prompt can be withheld from a submission without breaking verification.
+	PromptSHA string `json:"prompt_sha256,omitempty"`
+	// PromptLen is the prompt length in characters (kept when text is redacted).
+	PromptLen int `json:"prompt_len,omitempty"`
+	// Repo is the normalized git remote (e.g. github.com/owner/name); binds time to a repo.
+	Repo string `json:"repo,omitempty"`
 }
 
 // Validate checks required fields.
@@ -63,4 +72,35 @@ func (e Event) IsHumanActivity() bool {
 		return e.Human
 	}
 	return false
+}
+
+// Redacted returns e with prompt text replaced by its hash.
+func (e Event) Redacted() Event {
+	if e.PromptText != "" {
+		sum := sha256.Sum256([]byte(e.PromptText))
+		e.PromptLen = len([]rune(e.PromptText))
+		e.PromptSHA = hex.EncodeToString(sum[:])
+		e.PromptText = ""
+	}
+	return e
+}
+
+// PromptLength returns the prompt length whether or not the text was redacted.
+func (e Event) PromptLength() int {
+	if e.PromptText != "" {
+		return len([]rune(e.PromptText))
+	}
+	return e.PromptLen
+}
+
+// LowEffortPromptLen: prompts shorter than this ("continue", "ok", "go") are low effort.
+const LowEffortPromptLen = 20
+
+// LowEffort reports whether e is a prompt known to be very short.
+func (e Event) LowEffort() bool {
+	if e.Kind != Prompt {
+		return false
+	}
+	n := e.PromptLength()
+	return n > 0 && n < LowEffortPromptLen
 }

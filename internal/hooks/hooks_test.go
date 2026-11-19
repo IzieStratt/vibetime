@@ -12,7 +12,10 @@ import (
 
 var now = time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
 
-func init() { ProjectFor = func(cwd string) string { return filepath.Base(cwd) } }
+func init() {
+	ProjectFor = func(cwd string) string { return filepath.Base(cwd) }
+	RepoFor = func(cwd string) string { return "github.com/x/" + filepath.Base(cwd) }
+}
 
 func one(t *testing.T, h, raw string) event.Event {
 	t.Helper()
@@ -106,5 +109,41 @@ func TestProjectForGit(t *testing.T) {
 	}
 	if ProjectFor("") != "" {
 		t.Fatal("empty")
+	}
+}
+
+func TestNormalizeRepo(t *testing.T) {
+	for in, want := range map[string]string{
+		"git@github.com:Owner/Name.git\n":      "github.com/owner/name",
+		"https://github.com/owner/name":        "github.com/owner/name",
+		"https://user:tok@github.com/o/n.git/": "github.com/o/n",
+		"ssh://git@gitlab.com/o/n.git":         "gitlab.com/o/n",
+	} {
+		if got := NormalizeRepo(in); got != want {
+			t.Errorf("%q: %q", in, got)
+		}
+	}
+}
+
+func TestRepoAttached(t *testing.T) {
+	if e := one(t, "claude-code", `{"hook_event_name":"Stop","cwd":"/x/game"}`); e.Repo != "github.com/x/game" {
+		t.Fatal(e.Repo)
+	}
+}
+
+func TestRepoForGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip()
+	}
+	root := t.TempDir()
+	if exec.Command("git", "init", "-q", root).Run() != nil {
+		t.Skip()
+	}
+	if defaultRepoFor(root) != "" || defaultRepoFor("") != "" {
+		t.Fatal("no remote should be empty")
+	}
+	exec.Command("git", "-C", root, "remote", "add", "origin", "git@github.com:IzieStratt/vibetime.git").Run()
+	if got := defaultRepoFor(root); got != "github.com/iziestratt/vibetime" {
+		t.Fatal(got)
 	}
 }

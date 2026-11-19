@@ -61,7 +61,7 @@ func Claude(harness string, raw []byte, now time.Time) ([]event.Event, error) {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
 	}
-	base := event.Event{Time: now, Project: ProjectFor(in.Cwd), Harness: harness}
+	base := event.Event{Time: now, Project: ProjectFor(in.Cwd), Repo: RepoFor(in.Cwd), Harness: harness}
 	switch in.Event {
 	case "SessionStart":
 		base.Kind = event.SessionStart
@@ -101,12 +101,12 @@ func Codex(raw []byte, now time.Time) ([]event.Event, error) {
 	if in.Type != "agent-turn-complete" {
 		return nil, nil
 	}
-	p := ProjectFor(in.Cwd)
+	p, repo := ProjectFor(in.Cwd), RepoFor(in.Cwd)
 	var out []event.Event
 	for _, m := range in.Inputs {
-		out = append(out, event.Event{Time: now, Kind: event.Prompt, Project: p, Harness: "codex", PromptText: m})
+		out = append(out, event.Event{Time: now, Kind: event.Prompt, Project: p, Repo: repo, Harness: "codex", PromptText: m})
 	}
-	return append(out, event.Event{Time: now, Kind: event.Stop, Project: p, Harness: "codex"}), nil
+	return append(out, event.Event{Time: now, Kind: event.Stop, Project: p, Repo: repo, Harness: "codex"}), nil
 }
 
 // Parse dispatches by harness name.
@@ -118,4 +118,33 @@ func Parse(harness string, raw []byte, now time.Time) ([]event.Event, error) {
 		return Codex(raw, now)
 	}
 	return nil, fmt.Errorf("unknown harness %q", harness)
+}
+
+// RepoFor returns the normalized origin remote for cwd ("" if none), e.g.
+// "git@github.com:Owner/Name.git" -> "github.com/owner/name".
+var RepoFor = defaultRepoFor
+
+func defaultRepoFor(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", cwd, "config", "--get", "remote.origin.url").Output()
+	if err != nil {
+		return ""
+	}
+	return NormalizeRepo(string(out))
+}
+
+// NormalizeRepo canonicalizes a git remote URL to host/owner/name in lower case.
+func NormalizeRepo(u string) string {
+	u = strings.ToLower(strings.TrimSpace(u))
+	for _, p := range []string{"https://", "http://", "ssh://", "git://"} {
+		u = strings.TrimPrefix(u, p)
+	}
+	if i := strings.Index(u, "@"); i >= 0 {
+		u = u[i+1:]
+	}
+	u = strings.Replace(u, ":", "/", 1)
+	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
+	return u
 }

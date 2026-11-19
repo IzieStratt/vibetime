@@ -67,3 +67,19 @@ func FuzzVerify(f *testing.F) {
 		}
 	})
 }
+
+func TestRedactionPreservesHash(t *testing.T) {
+	e := event.Event{Time: time.Unix(5, 0).UTC(), Kind: event.Prompt, Project: "p", PromptText: "secret"}
+	h1, _ := Next(Genesis, e)
+	h2, _ := Next(Genesis, e.Redacted())
+	if h1 != h2 {
+		t.Fatal("redacting changed the hash")
+	}
+	e.PromptText = "different"
+	if h3, _ := Next(Genesis, e); h3 == h1 {
+		t.Fatal("prompt content not committed")
+	}
+	if r := e.Redacted(); r.PromptText != "" || len(r.PromptSHA) != 64 {
+		t.Fatalf("%+v", r)
+	}
+}

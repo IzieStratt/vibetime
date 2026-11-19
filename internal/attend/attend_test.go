@@ -81,3 +81,66 @@ func TestOrderIndependent(t *testing.T) {
 		t.Fatal("result depends on input order")
 	}
 }
+
+func TestMinutesSplitAcrossBoundaries(t *testing.T) {
+	// 08:00:30 -> 08:02:00 (heartbeats every 30s) on "a"
+	evs := every(0.5, 2, 0.5, event.Heartbeat, "a")
+	m := Minutes(evs, Default)["a"]
+	if m[t0.Unix()] != 30*time.Second || m[t0.Add(time.Minute).Unix()] != time.Minute || len(m) != 2 {
+		t.Fatalf("%v", m)
+	}
+	var sum time.Duration
+	for _, d := range m {
+		sum += d
+	}
+	if sum != Compute(evs, Default)["a"] {
+		t.Fatal("Minutes and Compute disagree")
+	}
+}
+
+func TestMinutesNeverOver60s(t *testing.T) {
+	evs := append(every(0, 30, 0.25, event.Heartbeat, "a"), every(0.1, 30.1, 0.25, event.Heartbeat, "b")...)
+	per := map[int64]time.Duration{}
+	for _, mm := range Minutes(evs, Default) {
+		for k, d := range mm {
+			per[k] += d
+		}
+	}
+	for k, d := range per {
+		if d > time.Minute {
+			t.Fatalf("minute %d has %v", k, d)
+		}
+	}
+}
+
+func prompt(min float64, text string) event.Event {
+	e := at(min, event.Prompt, "a")
+	e.PromptText = text
+	return e
+}
+
+// B1: "continue" every 4 minutes while away.
+func TestContinueFarmingDecays(t *testing.T) {
+	var evs []event.Event
+	for i := 0; i < 15; i++ {
+		evs = append(evs, prompt(float64(i*4), "continue"))
+	}
+	got := Compute(evs, Default)["a"]
+	// first prompt earns its 4 min gap, the 13 repeats earn nothing (gap 4m > 1m cap)
+	if got != 4*time.Minute {
+		t.Fatalf("got %v", got)
+	}
+	// real prompts at the same cadence earn full credit
+	var real []event.Event
+	for i := 0; i < 15; i++ {
+		real = append(real, prompt(float64(i*4), "the recoil pattern is wrong after the 3rd shot, fix the spray table"))
+	}
+	if Compute(real, Default)["a"] != 56*time.Minute {
+		t.Fatal("real prompts penalized")
+	}
+	// redacted low-effort prompts are still detected via prompt_len
+	red := []event.Event{prompt(0, "go").Redacted(), prompt(0.5, "go").Redacted(), prompt(3, "go")}
+	if Compute(red, Default)["a"] != 30*time.Second {
+		t.Fatalf("redacted: %v", Compute(red, Default))
+	}
+}
