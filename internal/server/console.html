@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vibetime review</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1b18;--muted:#6d665c;--line:#e6e1d8;--card:#fff;--accent:#c2410c;--bad:#b91c1c;--ok:#15803d}
+@media (prefers-color-scheme:dark){:root{--bg:#151412;--fg:#ece8e1;--muted:#a39b8f;--line:#2d2a26;--card:#1d1c19;--accent:#fb923c;--bad:#f87171;--ok:#4ade80}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px;display:grid;grid-template-columns:320px 1fr;gap:20px}
+@media (max-width:760px){main{grid-template-columns:1fr}}
+h1{font-size:20px;margin:0 0 12px}h2{font-size:17px;margin:0 0 4px}
+.muted{color:var(--muted)}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+#queue button{display:block;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;color:var(--fg);cursor:pointer;font:inherit}
+#queue button[aria-current]{border-color:var(--accent)}
+.risk{float:right;font-weight:600;font-variant-numeric:tabular-nums}.hi{color:var(--bad)}
+.flag{border-left:3px solid var(--line);padding:4px 10px;margin:6px 0}.flag.w{border-color:var(--bad)}
+.flag code{font-weight:600}
+.stats{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0}.stats b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+svg{width:100%;height:auto;display:block;margin:8px 0}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.actions button,.actions input{font:inherit;padding:7px 12px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+.actions input[type=number]{width:90px}.actions input[type=text]{flex:1;min-width:160px}
+button.ok{border-color:var(--ok);color:var(--ok)}button.bad{border-color:var(--bad);color:var(--bad)}
+#login{max-width:420px;margin:60px auto;padding:0 16px}#login input{width:100%;padding:8px;font:inherit;margin:8px 0;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg)}
+.legend span{margin-right:12px;font-size:13px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+</style></head><body>
+<div id="login" hidden><h1>vibetime review</h1><p class="muted">Paste a reviewer token.</p>
+<input id="tok" type="password" autocomplete="off"><div class="actions"><button id="go">Sign in</button></div><p id="lerr" class="hi"></p></div>
+<main id="app" hidden>
+<section><h1>Needs review</h1><div id="queue"></div></section>
+<section id="detail" class="card"><p class="muted">Pick a submission.</p></section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) k === "class" ? e.className = v : e.setAttribute(k, v); e.append(...kids); return e; };
+const hrs = s => (s / 3600).toFixed(1) + "h";
+let token = ""; try { token = localStorage.getItem("vt_review") || ""; } catch {}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+async function loadQueue(selectId) {
+  const q = await api("/api/v1/review/queue");
+  const box = $("#queue"); box.replaceChildren();
+  if (!q.length) box.append(el("p", { class: "muted" }, "Queue is empty."));
+  for (const s of q) {
+    const b = el("button", { "data-id": s.id }, el("span", { class: "risk" + (s.risk >= 40 ? " hi" : "") }, s.risk),
+      el("strong", {}, s.handle + " / " + s.project), el("br"), el("span", { class: "muted" }, hrs(s.verified_seconds) + " verified, " + s.result.flags.length + " flags"));
+    b.onclick = () => show(s.id);
+    box.append(b);
+  }
+  if (selectId) show(selectId); else if (q[0]) show(q[0].id); else $("#detail").replaceChildren(el("p", { class: "muted" }, "Nothing to review."));
+}
+const COLORS = { prompt: "var(--accent)", edit: "var(--ok)", heartbeat: "var(--muted)", idle: "var(--bad)", stop: "var(--fg)" };
+function timeline(s) {
+  const from = Date.parse(s.from), to = Date.parse(s.to), W = 1000, H = 60, x = t => ((t - from) / (to - from)) * W;
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Event timeline");
+  const rows = { prompt: 8, edit: 20, heartbeat: 32, stop: 44, idle: 44 };
+  for (const l of s.links || []) {
+    const e = l.event; if (e.project && e.project !== s.project) continue;
+    const t = Date.parse(e.time); if (t < from || t > to || !(e.kind in rows)) continue;
+    const r = document.createElementNS(ns, "rect");
+    r.setAttribute("x", x(t)); r.setAttribute("y", rows[e.kind]); r.setAttribute("width", 2); r.setAttribute("height", 10); r.setAttribute("fill", COLORS[e.kind]);
+    svg.append(r);
+  }
+  return svg;
+}
+async function show(id) {
+  document.querySelectorAll("#queue button").forEach(b => b.toggleAttribute("aria-current", +b.dataset.id === id));
+  const s = await api("/api/v1/submissions/" + id), r = s.result, d = $("#detail");
+  const prompts = (s.links || []).filter(l => l.event.kind === "prompt" && l.event.project === s.project);
+  const shown = prompts.filter(l => l.event.prompt_text);
+  const approve = el("input", { type: "number", min: 0, step: 0.1, value: (s.verified_seconds / 3600).toFixed(1), "aria-label": "Hours to approve" });
+  const note = el("input", { type: "text", placeholder: "Note to the submitter", "aria-label": "Note" });
+  const act = status => async () => {
+    try {
+      await api(`/api/v1/submissions/${id}/review`, { method: "POST", body: JSON.stringify({ status, approved_seconds: Math.round(+approve.value * 3600), note: note.value }) });
+      loadQueue();
+    } catch (e) { alert(e.message); }
+  };
+  const bOk = el("button", { class: "ok" }, "Approve all"), bPart = el("button", {}, "Approve hours"), bBad = el("button", { class: "bad" }, "Reject");
+  bOk.onclick = act("approved"); bPart.onclick = act("partial"); bBad.onclick = act("rejected");
+  d.replaceChildren(
+    el("h2", {}, s.handle + " / " + s.project),
+    el("p", { class: "muted" }, (s.repo || "no repo") + " · " + new Date(s.from).toLocaleString() + " to " + new Date(s.to).toLocaleString()),
+    el("div", { class: "stats" },
+      el("div", {}, el("b", {}, hrs(r.verified_seconds)), el("span", { class: "muted" }, "verified")),
+      el("div", {}, el("b", {}, hrs(r.claimed_seconds)), el("span", { class: "muted" }, "claimed")),
+      el("div", {}, el("b", {}, r.anchored_events + " / " + (r.anchored_events + r.unanchored_events)), el("span", { class: "muted" }, "events anchored")),
+      el("div", {}, el("b", { class: r.risk >= 40 ? "hi" : "" }, r.risk), el("span", { class: "muted" }, "risk"))),
+    timeline(s),
+    el("div", { class: "legend" }, ...Object.entries(COLORS).filter(([k]) => k !== "stop").map(([k, c]) => el("span", {}, Object.assign(el("i"), { style: `background:${c}` }), k))),
+    el("h2", {}, "Flags"),
+    ...(r.flags.length ? r.flags.map(f => el("div", { class: "flag" + (f.weight ? " w" : "") }, el("code", {}, f.code), " ", f.detail)) : [el("p", { class: "muted" }, "None.")]),
+    el("h2", {}, `Prompts (${shown.length} of ${prompts.length} shared)`),
+    ...shown.slice(0, 50).map(l => el("div", { class: "flag" }, el("span", { class: "muted" }, new Date(l.event.time).toLocaleTimeString() + " "), l.event.prompt_text)),
+    el("div", { class: "actions" }, bOk, approve, bPart, bBad, note));
+}
+async function start() {
+  try { await loadQueue(); $("#login").hidden = true; $("#app").hidden = false; }
+  catch (e) { $("#app").hidden = true; $("#login").hidden = false; if (token) $("#lerr").textContent = e.message; }
+}
+$("#go").onclick = () => { token = $("#tok").value.trim(); try { localStorage.setItem("vt_review", token); } catch {} start(); };
+start();
+</script></body></html>

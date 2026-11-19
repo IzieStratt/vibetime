@@ -13,7 +13,12 @@ jobs:
         with: { go-version-file: go.mod }
       - run: go vet ./...
       - run: go test -race -cover ./...
-      - run: go build -trimpath -ldflags="-s -w" -o dist/ ./cmd/vibetime
+      - run: go build -trimpath -ldflags="-s -w" -o dist/ ./cmd/...
+      # real login-service install on a throwaway machine: agent must come up on 47391
+      - name: service install
+        if: runner.os != 'Linux'
+        shell: bash
+        run: VIBETIME_SERVICE_TEST=1 VIBETIME_BIN="$PWD/dist/vibetime$([ "$RUNNER_OS" = Windows ] && echo .exe)" go test -run RealInstall -v ./internal/service
   plugins:
     runs-on: ubuntu-latest
     steps:
@@ -21,3 +26,21 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
       - run: node --test plugins/opencode/vibetime.test.ts
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: go build -o bin/ ./cmd/...
+      - run: cd e2e && npm ci && npx playwright install --with-deps chromium
+      - run: node --test e2e/console.test.mjs
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: VIBETIME_LOAD=1 go test -run LoadBudget -v ./internal/server

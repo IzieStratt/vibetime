@@ -18,6 +18,7 @@ import (
 	"github.com/IzieStratt/vibetime/internal/event"
 	"github.com/IzieStratt/vibetime/internal/hooks"
 	"github.com/IzieStratt/vibetime/internal/presence"
+	"github.com/IzieStratt/vibetime/internal/service"
 	"github.com/IzieStratt/vibetime/internal/store"
 	"github.com/IzieStratt/vibetime/internal/syncer"
 )
@@ -58,11 +59,13 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 		return login(args[1:], stderr)
 	case "submit":
 		return submit(args[1:], stderr)
+	case "service":
+		return svc(args[1:], stderr)
 	case "version":
 		fmt.Fprintln(stderr, "vibetime 0.1.0")
 		return 0
 	}
-	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|login|submit|version]\n")
+	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|login|submit|service install|service uninstall|version]\n")
 	return 2
 }
 
@@ -221,6 +224,32 @@ func submit(args []string, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "submission %d: %s, %.1fh verified, risk %d\n", sub.ID, sub.Status, float64(sub.VerifiedSeconds)/3600, sub.Risk)
 	for _, fl := range sub.Result.Flags {
 		fmt.Fprintf(stderr, "  [%s] %s\n", fl.Code, fl.Detail)
+	}
+	return 0
+}
+
+// svcInstall/svcUninstall are swapped in tests so they never touch the real machine.
+var svcInstall, svcUninstall = service.Install, service.Uninstall
+
+func svc(args []string, stderr io.Writer) int {
+	var err error
+	switch {
+	case len(args) == 1 && args[0] == "install":
+		err = svcInstall()
+	case len(args) == 1 && args[0] == "uninstall":
+		err = svcUninstall()
+	default:
+		fmt.Fprintln(stderr, "usage: vibetime service install|uninstall")
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "service:", err)
+		return 1
+	}
+	if args[0] == "install" {
+		fmt.Fprintln(stderr, "installed: vibetime now starts at login")
+	} else {
+		fmt.Fprintln(stderr, "uninstalled")
 	}
 	return 0
 }
