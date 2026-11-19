@@ -242,3 +242,89 @@ func TestHookReplyForCursor(t *testing.T) {
 		t.Fatalf("%q", out.String())
 	}
 }
+
+// Contract test: each editor's documented hook payload, driven through the real `vibetime
+// hook` CLI into a running agent, must land as the right events. The payload shapes are
+// copied from each vendor's docs (Cursor, Copilot, Augment, Continue). We cannot drive the
+// proprietary agents here (they need accounts), so this pins our side of the contract.
+func TestEditorHookContracts(t *testing.T) {
+	home := t.TempDir()
+	addr := freeAddr(t)
+	t.Setenv("VIBETIME_HOME", home)
+	t.Setenv("VIBETIME_URL", "http://"+addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- RunContext(ctx, []string{"serve", "-addr", addr}, nil, &bytes.Buffer{}) }()
+	t.Cleanup(func() { cancel(); <-done })
+	for i := 0; i < 50; i++ {
+		if r, err := http.Get("http://" + addr + "/v1/health"); err == nil {
+			r.Body.Close()
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cwd := filepath.Join(home, "cs2")
+	os.MkdirAll(cwd, 0o755)
+	q := func(s string) string { return strings.ReplaceAll(s, "CWD", cwd) }
+	cases := []struct {
+		vendor, payload, wantKind string
+	}{
+		// Cursor: cursor.com/docs/hooks (common fields + beforeSubmitPrompt/afterFileEdit/stop)
+		{"cursor", `{"hook_event_name":"beforeSubmitPrompt","model":"claude-4.5-sonnet","cursor_version":"2.1","workspace_roots":["CWD"],"user_email":null,"prompt":"tighten the hitbox","attachments":[]}`, "prompt"},
+		{"cursor", `{"hook_event_name":"afterFileEdit","workspace_roots":["CWD"],"file_path":"CWD/a.ts","edits":[{"old_string":"a","new_string":"b\nc"}]}`, "edit"},
+		{"cursor", `{"hook_event_name":"stop","workspace_roots":["CWD"],"status":"completed","loop_count":0}`, "stop"},
+		// Copilot: docs.github.com/en/copilot/reference/hooks-configuration (PascalCase → snake_case)
+		{"copilot", `{"hook_event_name":"UserPromptSubmit","session_id":"s","timestamp":"2026-11-19T10:00:00Z","cwd":"CWD","prompt":"add a scoreboard"}`, "prompt"},
+		{"copilot", `{"hook_event_name":"PostToolUse","session_id":"s","timestamp":"2026-11-19T10:00:00Z","cwd":"CWD","tool_name":"Edit","tool_input":{"old_string":"x","new_string":"y\nz"}}`, "edit"},
+		{"copilot", `{"hook_event_name":"Stop","session_id":"s","timestamp":"2026-11-19T10:00:00Z","cwd":"CWD","stop_reason":"end_turn","stop_hook_active":false}`, "stop"},
+		// Augment: docs.augmentcode.com/cli/hooks (user_prompt, context.modelName)
+		{"augment", `{"hook_event_name":"PromptSubmit","cwd":"CWD","conversation_id":"c","user_prompt":"port the buy menu","context":{"modelName":"gpt-5"}}`, "prompt"},
+		{"augment", `{"hook_event_name":"Stop","cwd":"CWD","conversation_id":"c"}`, "stop"},
+		// Continue CLI: Claude Code-compatible
+		{"continue", `{"hook_event_name":"UserPromptSubmit","cwd":"CWD","prompt":"wire up websockets"}`, "prompt"},
+	}
+	for _, c := range cases {
+		var errb bytes.Buffer
+		if code := Run([]string{"hook", c.vendor}, strings.NewReader(q(c.payload)), &errb); code != 0 {
+			t.Fatalf("%s hook exit: %s", c.vendor, errb.String())
+		}
+		// flush any spool with a retry (short client timeout under -race)
+		for i := 0; i < 30; i++ {
+			if _, err := os.Stat(filepath.Join(home, "spool.jsonl")); os.IsNotExist(err) {
+				break
+			}
+			Run([]string{"hook", c.vendor}, strings.NewReader(q(c.payload)), &errb)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	// Read the events back from the agent's own store to prove each payload parsed to the
+	// right kind, tagged to the project. (Attended seconds aren't meaningful here: the test
+	// fires prompt/edit/stop with no gaps between them.)
+	st, err := store.Open(filepath.Join(home, "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	links, _ := st.Links()
+	byHarness := map[string]map[event.Kind]int{}
+	for _, l := range links {
+		e := l.Event
+		if e.Project != "cs2" {
+			t.Fatalf("wrong project %q from %s", e.Project, e.Harness)
+		}
+		if byHarness[e.Harness] == nil {
+			byHarness[e.Harness] = map[event.Kind]int{}
+		}
+		byHarness[e.Harness][e.Kind]++
+	}
+	for _, v := range []string{"cursor", "copilot", "augment", "continue"} {
+		if byHarness[v][event.Prompt] == 0 {
+			t.Errorf("%s: no prompt event landed", v)
+		}
+	}
+	for _, v := range []string{"cursor", "copilot"} {
+		if byHarness[v][event.Edit] == 0 || byHarness[v][event.Stop] == 0 {
+			t.Errorf("%s: missing edit/stop (%v)", v, byHarness[v])
+		}
+	}
+}

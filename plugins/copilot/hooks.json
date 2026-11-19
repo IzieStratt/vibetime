@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "hooks": {
+    "UserPromptSubmit": [{ "type": "command", "command": "vibetime hook copilot" }],
+    "PostToolUse":      [{ "type": "command", "command": "vibetime hook copilot" }],
+    "Stop":             [{ "type": "command", "command": "vibetime hook copilot" }]
+  }
+}

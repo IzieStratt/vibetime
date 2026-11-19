@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [{ "command": "vibetime hook cursor" }],
+    "afterFileEdit":      [{ "command": "vibetime hook cursor" }],
+    "afterShellExecution":[{ "command": "vibetime hook cursor" }],
+    "stop":               [{ "command": "vibetime hook cursor" }]
+  }
+}

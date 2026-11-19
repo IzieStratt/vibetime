@@ -19,6 +19,10 @@ Then add the plugin for your harness:
 | OpenCode ≥ 2 | copy `plugins/opencode/vibetime.ts` to `~/.config/opencode/plugins/` |
 | Codex CLI | add `plugins/codex/config.toml` to `~/.codex/config.toml` |
 | Gemini CLI | merge `plugins/gemini-cli/settings.json` into `~/.gemini/settings.json` |
+| Cursor | copy `plugins/cursor/hooks.json` to `~/.cursor/hooks.json` — prompt-level (prompt, edit, stop, model) |
+| GitHub Copilot (agent/CLI) | copy `plugins/copilot/hooks.json` to `<repo>/.github/hooks/` — prompt-level |
+| Augment | merge `plugins/augment/settings.json` into `~/.augment/settings.json` — prompt-level |
+| Continue (CLI) | add `plugins/continue/hooks.json` to your Continue hooks — prompt-level |
 | Any editor (VS Code, Antigravity, Cursor, Windsurf, Zed, Vim/Neovim, JetBrains, Emacs, ...) | Install the editor's WakaTime plugin and set `api_url = http://127.0.0.1:47391/api/v1` in `~/.wakatime.cfg` (any `api_key`). Editor time counts as hands-on. WakaTime's own "ai coding" heartbeats are recorded as agent activity and earn no time |
 | Anything else | POST JSON events to `http://127.0.0.1:47391/v1/events` (schema: `internal/event`) |
 

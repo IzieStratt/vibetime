@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "command": "vibetime hook continue" }],
+    "PostToolUse":      [{ "command": "vibetime hook continue" }],
+    "Stop":             [{ "command": "vibetime hook continue" }]
+  }
+}
