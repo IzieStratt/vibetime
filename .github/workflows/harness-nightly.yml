@@ -15,3 +15,13 @@ jobs:
       - run: npm i -g @openai/codex && sudo apt-get install -y sqlite3
       - run: curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5-coder:1.5b
       - run: ./e2e/codex.sh
+  gemini:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm i -g @google/gemini-cli && sudo apt-get install -y sqlite3
+      - run: ./e2e/gemini.sh
