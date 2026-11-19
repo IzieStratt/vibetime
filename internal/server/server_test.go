@@ -458,3 +458,29 @@ func TestConsolePage(t *testing.T) {
 		t.Fatal(c)
 	}
 }
+
+func TestUnifiedRecord(t *testing.T) {
+	e := newEnv(t)
+	e.s.PublicURL = "https://vt.example"
+	e.s.Rand = func() float64 { return 0 }
+	a := e.agent(e.user("rowan"))
+	a.session("cs2", "")
+	_, sub := a.submit("cs2")
+	u := sub.Unified
+	if u.CodeURL != "https://github.com/kid/cs2" || u.HoursSpent != nil || u.VibetimeStatus != "needs_review" || u.ReviewURL != fmt.Sprintf("https://vt.example/review#%d", sub.ID) {
+		t.Fatalf("%+v", u)
+	}
+	rtok, _ := e.s.CreateUser("fraudsquad", true)
+	_, b := e.call("POST", fmt.Sprintf("/api/v1/submissions/%d/review", sub.ID), rtok, map[string]any{"status": "partial", "approved_seconds": 3600, "note": "ok"})
+	var got Submission
+	json.Unmarshal(b, &got)
+	if got.Unified.HoursSpent == nil || *got.Unified.HoursSpent != 1 || !strings.Contains(got.Unified.Justification, "reviewer: ok") ||
+		strings.Contains(got.Unified.Justification, "random_audit") {
+		t.Fatalf("%+v", got.Unified)
+	}
+	var raw map[string]map[string]any
+	json.Unmarshal(b, &raw)
+	if raw["unified"]["hours_spent"] != 1.0 {
+		t.Fatalf("json field names: %v", raw["unified"])
+	}
+}
