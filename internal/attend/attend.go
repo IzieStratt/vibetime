@@ -84,7 +84,7 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 	sort.SliceStable(stops, func(i, j int) bool { return stops[i].Time.Before(stops[j].Time) })
 	sort.SliceStable(tl, func(i, j int) bool { return tl[i].Time.Before(tl[j].Time) })
 
-	prevLow := false
+	var lowTimes []time.Time
 	for i := 0; i < len(tl); i++ {
 		cur := tl[i]
 		if cur.Kind == event.Idle {
@@ -93,11 +93,18 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 		limit := cfg.Timeout
 		if cur.Kind == event.Prompt {
 			limit = cfg.WatchCap
-			low := cur.LowEffort()
-			if low && prevLow && cfg.LowEffortCap > 0 {
-				limit = cfg.LowEffortCap
+			// A short prompt ("continue", "go") keeps the full allowance only if no other short
+			// prompt happened in the previous LowEffortWindow, so alternating with a longer prompt
+			// doesn't reset it.
+			if cur.LowEffort() {
+				for len(lowTimes) > 0 && cur.Time.Sub(lowTimes[0]) > LowEffortWindow {
+					lowTimes = lowTimes[1:]
+				}
+				if len(lowTimes) > 0 && cfg.LowEffortCap > 0 {
+					limit = cfg.LowEffortCap
+				}
+				lowTimes = append(lowTimes, cur.Time)
 			}
-			prevLow = low
 		}
 		if i+1 < len(tl) {
 			if gap := tl[i+1].Time.Sub(cur.Time); gap > 0 && gap <= limit {
@@ -112,15 +119,20 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 			if i+1 < len(tl) && tl[i+1].Time.Before(end) {
 				end = tl[i+1].Time
 			}
-			for _, s := range stops {
-				if s.Project == cur.Project && s.Time.After(cur.Time) && !s.Time.After(end) {
-					emit(cur.Project, cur.Time, s.Time, cur.Kind)
+			// stops are sorted: jump to the first one after the prompt (no per-prompt full scan)
+			j := sort.Search(len(stops), func(k int) bool { return stops[k].Time.After(cur.Time) })
+			for ; j < len(stops) && !stops[j].Time.After(end); j++ {
+				if stops[j].Project == cur.Project {
+					emit(cur.Project, cur.Time, stops[j].Time, cur.Kind)
 					break
 				}
 			}
 		}
 	}
 }
+
+// LowEffortWindow is how far back repeated short prompts are remembered.
+const LowEffortWindow = 10 * time.Minute
 
 // Total sums all projects.
 func Total(m map[string]time.Duration) time.Duration {

@@ -42,6 +42,8 @@ type Server struct {
 	OAuth       *OAuth        // nil disables provider login
 	PublicURL   string        // e.g. https://vibetime.hackclub.com
 	hub         hub
+	rlMu        sync.Mutex
+	recent      map[int64][]time.Time
 	webhookWait sync.WaitGroup
 }
 
@@ -60,6 +62,8 @@ CREATE TABLE IF NOT EXISTS submissions (id INTEGER PRIMARY KEY, user_id INTEGER 
   result TEXT NOT NULL, bundle TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS prompt_hashes (sha TEXT NOT NULL, user_id INTEGER NOT NULL, submission_id INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS prompt_hashes_sha ON prompt_hashes(sha);
+CREATE TABLE IF NOT EXISTS credited (user_id INTEGER NOT NULL, minute INTEGER NOT NULL, seconds INTEGER NOT NULL, submission_id INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS credited_user ON credited(user_id, minute);
 `
 
 func Open(path string) (*Server, error) {
@@ -375,6 +379,10 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	ch := s.hub.subscribe(u.ID)
+	if ch == nil {
+		fail(w, 503, "too many live viewers for this profile")
+		return
+	}
 	defer s.hub.unsubscribe(u.ID, ch)
 	send := func() {
 		st, _ := s.UserStats(u)
@@ -398,6 +406,9 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// MaxLiveViewers caps open live streams per profile.
+const MaxLiveViewers = 50
+
 type hub struct {
 	mu   sync.Mutex
 	subs map[int64]map[chan struct{}]bool
@@ -406,6 +417,9 @@ type hub struct {
 func (h *hub) subscribe(id int64) chan struct{} {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if len(h.subs[id]) >= MaxLiveViewers {
+		return nil
+	}
 	if h.subs == nil {
 		h.subs = map[int64]map[chan struct{}]bool{}
 	}
@@ -479,7 +493,7 @@ type UnifiedRecord struct {
 
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 	var in SubmitRequest
-	if !decode(w, r, &in, 64<<20) {
+	if !decode(w, r, &in, 32<<20) {
 		return
 	}
 	if !deviceRe.MatchString(in.Device) || in.Project == "" || !in.To.After(in.From) || len(in.Links) == 0 {
@@ -488,6 +502,14 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	if in.To.Sub(in.From) > 366*24*time.Hour {
 		fail(w, 400, "window too long")
+		return
+	}
+	if len(in.Links) > MaxBundleLinks {
+		fail(w, 413, "bundle too large; submit a shorter window")
+		return
+	}
+	if !s.allowSubmit(u.ID) {
+		fail(w, 429, "too many submissions; try again in a minute")
 		return
 	}
 	rows, err := s.DB.Query(`SELECT head, received_at FROM commitments WHERE user_id = ? AND device = ?`, u.ID, in.Device)
@@ -518,6 +540,17 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 	}
 
 
+	// B4 / review #2: a user's minute can be credited once, across all devices and submissions
+	// (rejected submissions release their minutes).
+	if removed := s.dedupe(u.ID, &res); removed > 0 {
+		w := 0
+		if removed*10 > res.VerifiedSeconds+removed {
+			w = 20
+		}
+		res.Flags = append(res.Flags, verify.Flag{Code: "already_credited", Weight: w,
+			Detail: fmt.Sprintf("%.1fh of this window was already credited to another submission or device; not counted again", float64(removed)/3600)})
+		res.Risk += w
+	}
 	status := "needs_review"
 	if res.Valid && res.Risk == 0 {
 		status = "auto_approved"
@@ -539,6 +572,11 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	id, _ := out.LastInsertId()
+	for m, sec := range res.Minutes {
+		if sec > 0 {
+			s.DB.Exec(`INSERT INTO credited(user_id, minute, seconds, submission_id) VALUES(?,?,?,?)`, u.ID, m, sec, id)
+		}
+	}
 	sub, _ := s.loadSubmission(id, false)
 	s.notify(sub)
 	writeJSON(w, 201, sub)
@@ -706,3 +744,65 @@ func (s *Server) unified(sub Submission, uid int64) UnifiedRecord {
 }
 
 func round2(f float64) float64 { return float64(int64(f*100+0.5)) / 100 }
+
+// dedupe trims res.Minutes so no minute exceeds 60s across the user's live submissions,
+// updates VerifiedSeconds, and returns the seconds removed.
+func (s *Server) dedupe(uid int64, res *verify.Result) int64 {
+	if len(res.Minutes) == 0 {
+		return 0
+	}
+	lo, hi := int64(1<<62), int64(0)
+	for m := range res.Minutes {
+		lo, hi = min(lo, m), max(hi, m)
+	}
+	rows, err := s.DB.Query(`SELECT c.minute, SUM(c.seconds) FROM credited c JOIN submissions s ON s.id = c.submission_id
+		WHERE c.user_id = ? AND c.minute BETWEEN ? AND ? AND s.status != 'rejected' GROUP BY c.minute`, uid, lo, hi)
+	if err != nil {
+		return 0
+	}
+	used := map[int64]int64{}
+	for rows.Next() {
+		var m, sec int64
+		rows.Scan(&m, &sec)
+		used[m] = sec
+	}
+	rows.Close()
+	var removed int64
+	for m, sec := range res.Minutes {
+		// Overlapping claims of a minute are most likely the same activity, so only time beyond
+		// what is already credited counts, and never past 60s.
+		if keep := min(max(sec-used[m], 0), max(60-used[m], 0)); keep < sec {
+			removed += sec - keep
+			res.Minutes[m] = keep
+		}
+	}
+	res.VerifiedSeconds -= removed
+	return removed
+}
+
+// MaxBundleLinks bounds verification work per submission (~ a year of heavy use).
+const MaxBundleLinks = 300_000
+
+// SubmitBurst submissions are allowed per user per minute.
+const SubmitBurst = 5
+
+func (s *Server) allowSubmit(uid int64) bool {
+	s.rlMu.Lock()
+	defer s.rlMu.Unlock()
+	if s.recent == nil {
+		s.recent = map[int64][]time.Time{}
+	}
+	now := s.Now()
+	keep := s.recent[uid][:0]
+	for _, t := range s.recent[uid] {
+		if now.Sub(t) < time.Minute {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) >= SubmitBurst {
+		s.recent[uid] = keep
+		return false
+	}
+	s.recent[uid] = append(keep, now)
+	return true
+}

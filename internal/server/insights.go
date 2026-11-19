@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// Per-minute caps on public steering counts.
+const (
+	MaxPromptsPerMinute    = 6
+	MaxAILinesPerMinute    = 2000
+	MaxHumanEditsPerMinute = 30
+)
+
 // StreakMinimum is how much attended time makes a day count toward a streak.
 const StreakMinimum = 15 * time.Minute
 
@@ -55,6 +62,7 @@ func (s *Server) UserInsights(u user, loc *time.Location) (Insights, error) {
 		modes   [3]int64
 	}
 	perMin := map[int64][]pm{}
+	counts := map[int64][3]int64{} // prompts, ai lines, human edits per minute (all devices)
 	in := Insights{Handle: u.Handle, Projects: map[string]int64{}}
 	for rows.Next() {
 		var p string
@@ -65,12 +73,16 @@ func (s *Server) UserInsights(u user, loc *time.Location) (Insights, error) {
 			continue
 		}
 		perMin[m] = append(perMin[m], pm{p, sec, md})
-		in.Prompts += pr
-		in.AILines += ai
-		in.HumanEdits += he
+		counts[m] = [3]int64{counts[m][0] + pr, counts[m][1] + ai, counts[m][2] + he}
 	}
 	if err := rows.Err(); err != nil {
 		return in, err
+	}
+	// Self-reported counts: cap per minute (across devices) at what a person can plausibly do.
+	for _, c := range counts {
+		in.Prompts += min(c[0], MaxPromptsPerMinute)
+		in.AILines += min(c[1], MaxAILinesPerMinute)
+		in.HumanEdits += min(c[2], MaxHumanEditsPerMinute)
 	}
 	byDay := map[string]int64{}
 	frac := map[string]float64{}

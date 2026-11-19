@@ -112,8 +112,11 @@ func Codex(raw []byte, now time.Time) ([]event.Event, error) {
 // Parse dispatches by harness name.
 func Parse(harness string, raw []byte, now time.Time) ([]event.Event, error) {
 	switch harness {
-	case "claude-code", "gemini-cli":
+	case "claude-code", "gemini-cli", "copilot", "continue":
+		// Copilot's PascalCase hook events and Continue's CLI hooks use Claude Code's payload.
 		return Claude(harness, raw, now)
+	case "cursor", "augment":
+		return Cursor(harness, raw, now)
 	case "codex":
 		return Codex(raw, now)
 	}
@@ -147,4 +150,89 @@ func NormalizeRepo(u string) string {
 	u = strings.Replace(u, ":", "/", 1)
 	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
 	return u
+}
+
+// cursorLike covers Cursor (cursor.com/docs/hooks) and Augment (docs.augmentcode.com/cli/hooks),
+// which share event names via Augment's Cursor aliases but name some fields differently.
+type cursorLike struct {
+	Event          string   `json:"hook_event_name"`
+	Model          string   `json:"model"`
+	WorkspaceRoots []string `json:"workspace_roots"`
+	Cwd            string   `json:"cwd"`
+	Prompt         string   `json:"prompt"`      // Cursor
+	UserPrompt     string   `json:"user_prompt"` // Augment
+	Edits          []struct {
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+	} `json:"edits"`
+	ToolName  string          `json:"tool_name"`
+	ToolInput json.RawMessage `json:"tool_input"`
+	Context   struct {
+		ModelName string `json:"modelName"`
+	} `json:"context"`
+}
+
+// Cursor parses Cursor and Augment hook payloads (both send hook_event_name).
+func Cursor(harness string, raw []byte, now time.Time) ([]event.Event, error) {
+	var in cursorLike
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, err
+	}
+	dir := in.Cwd
+	if len(in.WorkspaceRoots) > 0 {
+		dir = in.WorkspaceRoots[0]
+	}
+	model := in.Model
+	if model == "" {
+		model = in.Context.ModelName
+	}
+	base := ev(now, harness, dir, model)
+	switch strings.ToLower(in.Event) {
+	case "sessionstart":
+		base.Kind = event.SessionStart
+	case "beforesubmitprompt", "promptsubmit", "userpromptsubmit":
+		base.Kind, base.PromptText = event.Prompt, in.Prompt
+		if base.PromptText == "" {
+			base.PromptText = in.UserPrompt
+		}
+	case "afterfileedit":
+		base.Kind = event.Edit
+		for _, e := range in.Edits {
+			base.LinesAdded += lines(e.NewString)
+			base.LinesRemoved += lines(e.OldString)
+		}
+	case "posttooluse", "aftershellexecution", "aftermcpexecution":
+		base.Kind = event.ToolCall
+		if strings.EqualFold(in.ToolName, "edit") || strings.EqualFold(in.ToolName, "write") {
+			var ei editInput
+			json.Unmarshal(in.ToolInput, &ei)
+			base.Kind = event.Edit
+			base.LinesAdded, base.LinesRemoved = lines(ei.NewString)+lines(ei.Content), lines(ei.OldString)
+		}
+	case "stop", "sessionend":
+		base.Kind = event.Stop
+	default:
+		return nil, nil
+	}
+	return []event.Event{base}, nil
+}
+
+func ev(now time.Time, harness, dir, model string) event.Event {
+	return event.Event{Time: now, Project: ProjectFor(dir), Repo: RepoFor(dir), Harness: harness, Model: model}
+}
+
+// Reply is what the hook must print on stdout for harnesses that read a JSON answer.
+// Tracking never blocks anything.
+func Reply(harness string, raw []byte) string {
+	if harness != "cursor" {
+		return ""
+	}
+	var in struct {
+		Event string `json:"hook_event_name"`
+	}
+	json.Unmarshal(raw, &in)
+	if in.Event == "beforeSubmitPrompt" {
+		return `{"continue":true}`
+	}
+	return `{}`
 }

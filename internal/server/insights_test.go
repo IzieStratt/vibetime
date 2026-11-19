@@ -109,3 +109,21 @@ func TestImportEndpointAndInsights(t *testing.T) {
 		t.Fatalf("%+v", in)
 	}
 }
+
+// Review finding #8: inflated self-reported counts are capped per minute across devices.
+func TestSteeringCountsCapped(t *testing.T) {
+	e := newEnv(t)
+	tok := e.user("rowan")
+	a, b := e.agent(tok), e.agent(tok)
+	b.dev = "device-0002"
+	now := t0.Add(5 * time.Minute)
+	m := now.Add(-time.Minute).Unix()
+	a.sync(now, SyncMinute{Project: "cs2", Minute: m, Seconds: 60, Prompts: 9999, HumanEdits: 9999, AILines: 99999})
+	b.sync(now, SyncMinute{Project: "web", Minute: m, Seconds: 60, Prompts: 9999})
+	_, body := e.call("GET", "/api/v1/users/rowan/insights", "", nil)
+	var in Insights
+	json.Unmarshal(body, &in)
+	if in.Prompts != MaxPromptsPerMinute || in.HumanEdits != MaxHumanEditsPerMinute || in.AILines != MaxAILinesPerMinute {
+		t.Fatalf("%+v", in)
+	}
+}

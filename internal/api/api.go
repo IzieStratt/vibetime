@@ -50,6 +50,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]any{"error": err.Error(), "index": i})
 			return
 		}
+		if e.Kind.Internal() {
+			writeJSON(w, 400, map[string]any{"error": "presence events are recorded by the agent only", "index": i})
+			return
+		}
 	}
 	accepted, stale := 0, 0
 	for _, e := range evs {

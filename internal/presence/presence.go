@@ -17,12 +17,13 @@ var System IdleFunc = systemIdle
 
 // Watcher emits an Idle event when the user crosses Threshold of inactivity.
 type Watcher struct {
-	Idle      IdleFunc
-	Threshold time.Duration
-	Interval  time.Duration
-	Now       func() time.Time
-	Emit      func(event.Event)
-	away      bool
+	Idle       IdleFunc
+	Threshold  time.Duration
+	Interval   time.Duration
+	Now        func() time.Time
+	Emit       func(event.Event)
+	away       bool
+	lastActive time.Time
 }
 
 // Tick checks once; exported for tests.
@@ -39,6 +40,14 @@ func (w *Watcher) Tick() {
 		return
 	}
 	w.away = false
+	// Present: record one Active event per minute, so attended time can be checked against
+	// real input. Recent input (d < 1 min) is required, not merely "not yet idle".
+	if d < time.Minute {
+		if m := w.Now().Truncate(time.Minute); !m.Equal(w.lastActive) {
+			w.lastActive = m
+			w.Emit(event.Event{Time: w.Now(), Kind: event.Active})
+		}
+	}
 }
 
 func (w *Watcher) Run(ctx context.Context) {
