@@ -55,6 +55,9 @@ type Result struct {
 	Unanchored      int    `json:"unanchored_events"`
 	Flags           []Flag `json:"flags"`
 	Risk            int    `json:"risk"`
+	// Minutes is verified seconds per minute (unix) for the project; used to stop the same
+	// time being credited by more than one submission or device.
+	Minutes map[int64]int64 `json:"-"`
 }
 
 // AnchorSlack is how long after an event its covering commitment may arrive.
@@ -138,7 +141,16 @@ func Verify(q Request) Result {
 		res.flag("unanchored", 20, "%d events were never committed to the server", res.Unanchored-late)
 	}
 
-	res.VerifiedSeconds = secondsIn(good, q)
+	// B2 / forged local events: human activity only counts when the agent's own presence
+	// watcher saw real keyboard or mouse input around it. Plugins cannot post presence.
+	good, unseen := withPresence(good)
+	if unseen > 0 {
+		res.flag("activity_without_presence", 30, "%d human-activity events had no keyboard/mouse input within %v; not counted", unseen, PresenceWindow)
+	}
+	res.Minutes = minutesIn(good, q)
+	for _, s := range res.Minutes {
+		res.VerifiedSeconds += s
+	}
 	res.ClaimedSeconds = secondsIn(all, q)
 
 	proj := filter(good, q.Project)
@@ -188,7 +200,8 @@ func behaviour(res *Result, proj, timeline []event.Event, q Request) {
 			if e.PromptText == "" && e.PromptSHA != "" {
 				redacted++
 			}
-			// B3: typed faster than a human could (chars per second since agent stopped)
+			// B3: typed faster than a human could: chars per second since the agent last did
+			// anything (its stop, or its last tool call/edit for harnesses without stop hooks)
 			if !lastStop.IsZero() && e.PromptLength() > 40 {
 				if dt := e.Time.Sub(lastStop).Seconds(); dt > 0 && float64(e.PromptLength())/dt > 15 {
 					fast++
@@ -204,13 +217,15 @@ func behaviour(res *Result, proj, timeline []event.Event, q Request) {
 					break
 				}
 			}
-		case event.Stop:
+		case event.Stop, event.ToolCall:
 			lastStop = e.Time
 		case event.Heartbeat:
 			humanWork++
 		case event.Edit:
 			if e.Human {
 				humanWork++
+			} else {
+				lastStop = e.Time
 			}
 		}
 	}
@@ -345,4 +360,45 @@ func busiest24h(mins map[int64]time.Duration) (time.Time, time.Duration) {
 		_ = hi
 	}
 	return time.Unix(bestStart, 0), best
+}
+
+// PresenceWindow: how close a human-activity event must be to recorded OS input.
+const PresenceWindow = 90 * time.Second
+
+// withPresence drops human-activity events (prompts, heartbeats, hand edits, session
+// starts) that have no Active presence event within PresenceWindow. Agent events are kept:
+// they never earn time on their own.
+func withPresence(evs []event.Event) ([]event.Event, int) {
+	var active []time.Time
+	for _, e := range evs {
+		if e.Kind == event.Active {
+			active = append(active, e.Time)
+		}
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i].Before(active[j]) })
+	near := func(t time.Time) bool {
+		i := sort.Search(len(active), func(i int) bool { return !active[i].Before(t.Add(-PresenceWindow)) })
+		return i < len(active) && !active[i].After(t.Add(PresenceWindow))
+	}
+	out := evs[:0:0]
+	dropped := 0
+	for _, e := range evs {
+		if e.IsHumanActivity() && !near(e.Time) {
+			dropped++
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, dropped
+}
+
+func minutesIn(evs []event.Event, q Request) map[int64]int64 {
+	out := map[int64]int64{}
+	for m, d := range attend.Minutes(evs, attend.Default)[q.Project] {
+		t := time.Unix(m, 0)
+		if !t.Before(q.From.Truncate(time.Minute)) && t.Before(q.To) {
+			out[m] = int64(d / time.Second)
+		}
+	}
+	return out
 }

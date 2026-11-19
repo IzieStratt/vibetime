@@ -3,6 +3,7 @@ package gitev
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,5 +45,39 @@ func TestCommits(t *testing.T) {
 	}
 	if _, err := (&GitHub{BaseURL: ts.URL, Token: "tok"}).Commits("github.com/kid/missing", from, to); err == nil {
 		t.Fatal("expected 404")
+	}
+}
+
+func TestRejectsPathTricks(t *testing.T) {
+	g := &GitHub{BaseURL: "http://127.0.0.1:1", Token: "secret"}
+	for _, r := range []string{"github.com/../user", "github.com/a/b?x=1", "github.com/a/b#c", "github.com/a/%2e%2e", "github.com/a/.."} {
+		if _, err := g.Commits(r, time.Now(), time.Now()); err != ErrBadRepo {
+			t.Errorf("%s: %v", r, err)
+		}
+	}
+}
+
+func TestPagination(t *testing.T) {
+	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	var pages []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Query().Get("page")
+		pages = append(pages, p)
+		var out []string
+		n := 100
+		if p == "3" {
+			n = 5
+		}
+		for i := 0; i < n; i++ {
+			// newest first: page 1 = Nov 20.., page 2 = Nov 10.., page 3 = Oct (before window)
+			day := map[string]string{"1": "2026-11-20", "2": "2026-11-10", "3": "2026-10-20"}[p]
+			out = append(out, `{"before":"","after":"x","timestamp":"`+day+`T00:00:00Z","activity_type":"push"}`)
+		}
+		w.Write([]byte("[" + strings.Join(out, ",") + "]"))
+	}))
+	defer ts.Close()
+	cs, err := (&GitHub{BaseURL: ts.URL}).Commits("github.com/kid/cs2", from, from.AddDate(0, 1, 0))
+	if err != nil || len(cs) != 200 || strings.Join(pages, ",") != "1,2,3" {
+		t.Fatalf("%d %v %v", len(cs), pages, err)
 	}
 }

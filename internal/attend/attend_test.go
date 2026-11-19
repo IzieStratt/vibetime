@@ -190,3 +190,25 @@ func TestModes(t *testing.T) {
 		}
 	}
 }
+
+// Review finding #3: alternating "continue" with a longer prompt must not reset the cap.
+func TestAlternatingFarmingCapped(t *testing.T) {
+	var evs []event.Event
+	for i := 0; i < 30; i++ {
+		text := "continue"
+		if i%2 == 1 {
+			text = "keep going with the next feature now"
+		}
+		evs = append(evs, prompt(float64(i*4), text))
+	}
+	got := Compute(evs, Default)["a"]
+	// long prompts earn their 4 min (15 of them); repeat "continue"s inside 10 min earn nothing
+	// (4 min gap > 1 min cap); only the first "continue" earns its 4 min.
+	if got > 16*4*time.Minute {
+		t.Fatalf("farming earned %v", got)
+	}
+	// short prompts 15+ minutes apart are fine
+	if Compute([]event.Event{prompt(0, "go"), prompt(3, "x"), prompt(20, "go"), prompt(23, "y")}, Default)["a"] != 6*time.Minute {
+		t.Fatal("spaced short prompts penalized")
+	}
+}

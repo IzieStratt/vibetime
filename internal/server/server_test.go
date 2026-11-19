@@ -78,16 +78,21 @@ const dev = "device-0001"
 // agent simulates a real vibetime agent: events go into the chain and the head is synced
 // every minute with the minute aggregates.
 type agent struct {
-	e     *env
-	tok   string
-	dev   string
-	head  string
-	links []chain.Link
+	lastActive time.Time
+	e          *env
+	tok        string
+	dev        string
+	head       string
+	links      []chain.Link
 }
 
 func (e *env) agent(tok string) *agent { return &agent{e: e, tok: tok, dev: dev, head: chain.Genesis} }
 
 func (a *agent) add(ev event.Event) {
+	if ev.IsHumanActivity() && !ev.Time.Truncate(time.Minute).Equal(a.lastActive) { // the presence watcher
+		a.lastActive = ev.Time.Truncate(time.Minute)
+		a.add(event.Event{Time: ev.Time, Kind: event.Active})
+	}
 	h, _ := chain.Next(a.head, ev)
 	a.links = append(a.links, chain.Link{Event: ev, Hash: h})
 	a.head = h
@@ -503,5 +508,69 @@ func TestUnifiedRecord(t *testing.T) {
 	json.Unmarshal(b, &raw)
 	if raw["unified"]["hours_spent"] != 1.0 {
 		t.Fatalf("json field names: %v", raw["unified"])
+	}
+}
+
+// Review finding #2: the same hours submitted twice, or from a second device, count once.
+func TestNoDoubleCredit(t *testing.T) {
+	e := newEnv(t)
+	tok := e.user("rowan")
+	a := e.agent(tok)
+	a.session("cs2", "")
+	_, first := a.submit("cs2")
+	_, again := a.submit("cs2")
+	if first.Status != "auto_approved" || again.VerifiedSeconds != 0 || again.Status != "needs_review" ||
+		!strings.Contains(fmt.Sprint(again.Result.Flags), "already_credited") {
+		t.Fatalf("again status=%s verified=%d flags=%v", again.Status, again.VerifiedSeconds, again.Result.Flags)
+	}
+	// second device covering the same wall-clock time
+	b := e.agent(tok)
+	b.dev = "device-0002"
+	b.session("cs2", "dev2")
+	_, other := b.submit("cs2")
+	if other.VerifiedSeconds != 0 {
+		t.Fatalf("second device double counted: %d", other.VerifiedSeconds)
+	}
+	// rejecting the first releases its minutes
+	rtok, _ := e.s.CreateUser("fraudsquad", true)
+	e.call("POST", fmt.Sprintf("/api/v1/submissions/%d/review", first.ID), rtok, map[string]any{"status": "rejected"})
+	_, retry := a.submit("cs2")
+	if retry.VerifiedSeconds != first.VerifiedSeconds {
+		t.Fatalf("minutes not released: %d vs %d", retry.VerifiedSeconds, first.VerifiedSeconds)
+	}
+}
+
+func TestSubmitLimits(t *testing.T) {
+	e := newEnv(t)
+	tok := e.user("rowan")
+	req := SubmitRequest{Device: dev, Project: "p", From: t0, To: t0.Add(time.Hour), Links: make([]chain.Link, MaxBundleLinks+1)}
+	if c, _ := e.call("POST", "/api/v1/submissions", tok, req); c != 413 {
+		t.Fatalf("huge bundle: %d", c)
+	}
+	a := e.agent(tok)
+	a.session("cs2", "")
+	codes := map[int]int{}
+	for i := 0; i < SubmitBurst+2; i++ {
+		c, _ := a.submit("cs2")
+		codes[c]++
+	}
+	if codes[201] != SubmitBurst || codes[429] != 2 {
+		t.Fatalf("%v", codes)
+	}
+	e.at(e.s.Now().Add(2 * time.Minute))
+	if c, _ := a.submit("cs2"); c != 201 {
+		t.Fatal("limit should reset")
+	}
+}
+
+func TestLiveViewerCap(t *testing.T) {
+	var h hub
+	for i := 0; i < MaxLiveViewers; i++ {
+		if h.subscribe(1) == nil {
+			t.Fatal("early cap")
+		}
+	}
+	if h.subscribe(1) != nil || h.subscribe(2) == nil {
+		t.Fatal("cap per profile")
 	}
 }

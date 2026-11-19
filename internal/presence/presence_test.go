@@ -42,7 +42,11 @@ func TestWatcherTransitions(t *testing.T) {
 		Idle:      func() (time.Duration, error) { d := idle[i]; i++; return d, nil },
 		Threshold: 2 * time.Minute,
 		Now:       func() time.Time { return now },
-		Emit:      func(e event.Event) { got = append(got, e) },
+		Emit: func(e event.Event) {
+			if e.Kind == event.Idle {
+				got = append(got, e)
+			}
+		},
 	}
 	for range idle {
 		w.Tick()
@@ -111,5 +115,26 @@ func TestSystemIdleResetsOnInput(t *testing.T) {
 	after, err := System()
 	if err != nil || after >= before || after > time.Second {
 		t.Fatalf("input did not reset idle: before %v after %v (%v)", before, after, err)
+	}
+}
+
+func TestWatcherEmitsActiveOncePerMinute(t *testing.T) {
+	now := time.Unix(60_000, 0)
+	var got []event.Kind
+	idle := 5 * time.Second
+	w := &Watcher{Idle: func() (time.Duration, error) { return idle, nil }, Threshold: 2 * time.Minute,
+		Now: func() time.Time { return now }, Emit: func(e event.Event) { got = append(got, e.Kind) }}
+	for i := 0; i < 8; i++ { // 15s ticks over 2 minutes
+		w.Tick()
+		now = now.Add(15 * time.Second)
+	}
+	if len(got) != 2 || got[0] != event.Active {
+		t.Fatalf("%v", got)
+	}
+	idle = 90 * time.Second // not idle yet, but no recent input: no Active
+	now = now.Add(time.Minute)
+	w.Tick()
+	if len(got) != 2 {
+		t.Fatalf("active without recent input: %v", got)
 	}
 }

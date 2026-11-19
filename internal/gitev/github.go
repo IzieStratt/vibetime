@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,7 +20,14 @@ type GitHub struct {
 	HTTP    *http.Client
 }
 
-var ErrUnsupported = errors.New("only github.com repositories are supported")
+var (
+	ErrUnsupported = errors.New("only github.com repositories are supported")
+	ErrBadRepo     = errors.New("invalid repository name")
+	nameRe         = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+)
+
+// MaxPages bounds how many 100-item activity pages are read per submission.
+const MaxPages = 10
 
 func (g *GitHub) get(path string, v any) error {
 	base := g.BaseURL
@@ -52,14 +60,21 @@ func (g *GitHub) Commits(repo string, from, to time.Time) ([]verify.Commit, erro
 	if len(parts) != 3 || parts[0] != "github.com" {
 		return nil, ErrUnsupported
 	}
-	var acts []struct {
-		Before    string    `json:"before"`
-		After     string    `json:"after"`
-		Timestamp time.Time `json:"timestamp"`
-		Type      string    `json:"activity_type"`
+	// The repo is user-supplied and goes into an authenticated API path: allow only real names.
+	if !nameRe.MatchString(parts[1]) || !nameRe.MatchString(parts[2]) || parts[1] == ".." || parts[2] == ".." {
+		return nil, ErrBadRepo
 	}
-	if err := g.get(fmt.Sprintf("/repos/%s/%s/activity?per_page=100", parts[1], parts[2]), &acts); err != nil {
-		return nil, err
+	var acts []activity
+	// Activity is newest first: page until we pass the start of the window.
+	for page := 1; page <= MaxPages; page++ {
+		var batch []activity
+		if err := g.get(fmt.Sprintf("/repos/%s/%s/activity?per_page=100&page=%d", parts[1], parts[2], page), &batch); err != nil {
+			return nil, err
+		}
+		acts = append(acts, batch...)
+		if len(batch) < 100 || batch[len(batch)-1].Timestamp.Before(from) {
+			break
+		}
 	}
 	out := []verify.Commit{}
 	for _, a := range acts {
@@ -84,4 +99,11 @@ func (g *GitHub) Commits(repo string, from, to time.Time) ([]verify.Commit, erro
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+type activity struct {
+	Before    string    `json:"before"`
+	After     string    `json:"after"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"activity_type"`
 }

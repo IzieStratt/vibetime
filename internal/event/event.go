@@ -19,10 +19,11 @@ const (
 	Edit         Kind = "edit"      // a file edit; Human=true when typed by the user
 	Heartbeat    Kind = "heartbeat" // editor activity (WakaTime-style)
 	Idle         Kind = "idle"      // OS reports the user went idle / away
+	Active       Kind = "active"    // presence watcher: OS saw real input this minute (internal only)
 	Stop         Kind = "stop"      // agent finished its turn
 )
 
-var validKinds = map[Kind]bool{SessionStart: true, Prompt: true, ToolCall: true, Edit: true, Heartbeat: true, Idle: true, Stop: true}
+var validKinds = map[Kind]bool{SessionStart: true, Prompt: true, ToolCall: true, Edit: true, Heartbeat: true, Idle: true, Active: true, Stop: true}
 
 // Event is one locally recorded signal. Content fields (PromptText) never leave the machine
 // except inside an explicit submission bundle.
@@ -54,7 +55,7 @@ func (e Event) Validate() error {
 	if !validKinds[e.Kind] {
 		return fmt.Errorf("unknown kind %q", e.Kind)
 	}
-	if e.Kind != Idle && e.Project == "" {
+	if e.Kind != Idle && e.Kind != Active && e.Project == "" {
 		return errors.New("project is required")
 	}
 	if e.LinesAdded < 0 || e.LinesRemoved < 0 {
@@ -104,3 +105,7 @@ func (e Event) LowEffort() bool {
 	n := e.PromptLength()
 	return n > 0 && n < LowEffortPromptLen
 }
+
+// Internal reports whether only the agent itself may record this kind. Plugins and other
+// local processes cannot post presence: otherwise a script could fake being at the keyboard.
+func (k Kind) Internal() bool { return k == Idle || k == Active }

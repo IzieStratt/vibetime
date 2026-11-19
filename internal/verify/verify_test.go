@@ -17,6 +17,8 @@ const repo = "github.com/kid/cs2"
 
 // sim plays an agent: events are chained and the head is committed to the "server".
 type sim struct {
+	noPresence bool // a script posting events with nobody at the keyboard
+	lastActive time.Time
 	live       bool // commit once a minute, as the real agent does
 	nextCommit time.Time
 	prev, head string
@@ -27,6 +29,10 @@ type sim struct {
 func newSim() *sim { return &sim{prev: chain.Genesis, head: chain.Genesis} }
 
 func (s *sim) add(e event.Event) {
+	if !s.noPresence && e.IsHumanActivity() && !e.Time.Truncate(time.Minute).Equal(s.lastActive) {
+		s.lastActive = e.Time.Truncate(time.Minute)
+		s.add(event.Event{Time: e.Time, Kind: event.Active})
+	}
 	if s.live {
 		if s.nextCommit.IsZero() {
 			s.nextCommit = e.Time.Add(time.Minute)
@@ -314,6 +320,38 @@ func TestCommitmentOfPrevIsNotAGap(t *testing.T) {
 	s := honest(1)
 	s.commits = append([]Commitment{{chain.Genesis, t0}}, s.commits...)
 	if r := Verify(req(s)); has(r, "chain_gap") {
+		t.Fatal(codes(r))
+	}
+}
+
+// Review finding #1: a local script posts heartbeats (and could post idles) over loopback.
+// With no OS input recorded by the agent's own watcher, none of it counts.
+func TestForgedHeartbeatsWithoutPresence(t *testing.T) {
+	s := newSim()
+	s.live, s.noPresence = true, true
+	for i := 0; i < 180; i++ {
+		s.add(event.Event{Time: min(float64(i)), Kind: event.Heartbeat, Project: "cs2"})
+	}
+	r := Verify(req(s))
+	if r.VerifiedSeconds != 0 || !has(r, "activity_without_presence") {
+		t.Fatalf("verified %ds %s", r.VerifiedSeconds, codes(r))
+	}
+}
+
+// Review finding #7: a harness with no stop hooks must still get the typing-speed check.
+func TestSuperhumanTypingWithoutStops(t *testing.T) {
+	s := newSim()
+	s.live = true
+	m := 0.0
+	for i := 0; i < 20; i++ {
+		s.add(event.Event{Time: min(m), Kind: event.Prompt, Project: "cs2",
+			PromptText: "Refactor the netcode so client prediction and server reconciliation share one tick loop"})
+		s.add(event.Event{Time: min(m + 0.5), Kind: event.ToolCall, Project: "cs2"})
+		m += 0.9 + float64(i%4)*0.3 // agent edits, then the bot answers 3s later
+		s.add(event.Event{Time: min(m - 0.05), Kind: event.Edit, Project: "cs2", LinesAdded: 3})
+	}
+	s.commit(min(m + 1))
+	if r := Verify(req(s)); !has(r, "superhuman_typing") {
 		t.Fatal(codes(r))
 	}
 }

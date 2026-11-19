@@ -80,6 +80,9 @@ func TestLiveSyncThenSubmit(t *testing.T) {
 			next = next.Add(time.Minute)
 		}
 		clk.set(e.Time)
+		if e.IsHumanActivity() { // what the presence watcher records alongside real input
+			sy.Store.Append(event.Event{Time: e.Time, Kind: event.Active})
+		}
 		if _, err := sy.Store.Append(e); err != nil {
 			t.Fatal(err)
 		}

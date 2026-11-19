@@ -147,3 +147,72 @@ func TestRepoForGit(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestCursor(t *testing.T) {
+	base := `"conversation_id":"c","generation_id":"g","model":"claude-4.5-sonnet","cursor_version":"2.1","workspace_roots":["/w/cs2"],"user_email":null`
+	e := one(t, "cursor", `{"hook_event_name":"beforeSubmitPrompt",`+base+`,"prompt":"fix the smoke","attachments":[]}`)
+	if e.Kind != event.Prompt || e.PromptText != "fix the smoke" || e.Project != "cs2" || e.Model != "claude-4.5-sonnet" || e.Harness != "cursor" || e.Repo != "github.com/x/cs2" {
+		t.Fatalf("%+v", e)
+	}
+	e = one(t, "cursor", `{"hook_event_name":"afterFileEdit",`+base+`,"file_path":"/w/cs2/a.ts","edits":[{"old_string":"a","new_string":"b\nc"},{"old_string":"","new_string":"d"}]}`)
+	if e.Kind != event.Edit || e.Human || e.LinesAdded != 3 || e.LinesRemoved != 1 {
+		t.Fatalf("%+v", e)
+	}
+	if one(t, "cursor", `{"hook_event_name":"afterShellExecution",`+base+`,"command":"ls"}`).Kind != event.ToolCall {
+		t.Fatal("shell")
+	}
+	if one(t, "cursor", `{"hook_event_name":"stop",`+base+`,"status":"completed","loop_count":0}`).Kind != event.Stop {
+		t.Fatal("stop")
+	}
+	if one(t, "cursor", `{"hook_event_name":"sessionStart",`+base+`}`).Kind != event.SessionStart {
+		t.Fatal("start")
+	}
+	if evs, _ := Parse("cursor", []byte(`{"hook_event_name":"beforeReadFile",`+base+`}`), now); evs != nil {
+		t.Fatal("ignore")
+	}
+	if _, err := Parse("cursor", []byte("x"), now); err == nil {
+		t.Fatal("bad json")
+	}
+}
+
+func TestAugment(t *testing.T) {
+	e := one(t, "augment", `{"hook_event_name":"PromptSubmit","cwd":"/a/site","conversation_id":"x","user_prompt":"add dark mode","context":{"modelName":"opus"}}`)
+	if e.Kind != event.Prompt || e.PromptText != "add dark mode" || e.Project != "site" || e.Model != "opus" {
+		t.Fatalf("%+v", e)
+	}
+	e = one(t, "augment", `{"hook_event_name":"PostToolUse","cwd":"/a/site","tool_name":"Edit","tool_input":{"old_string":"x","new_string":"y\nz"}}`)
+	if e.Kind != event.Edit || e.LinesAdded != 2 {
+		t.Fatalf("%+v", e)
+	}
+	if one(t, "augment", `{"hook_event_name":"PostToolUse","cwd":"/a/site","tool_name":"Bash"}`).Kind != event.ToolCall {
+		t.Fatal("tool")
+	}
+	if one(t, "augment", `{"hook_event_name":"Stop","cwd":"/a/site"}`).Kind != event.Stop {
+		t.Fatal("stop")
+	}
+}
+
+// Copilot's PascalCase events (docs.github.com/en/copilot/reference/hooks-configuration)
+func TestCopilot(t *testing.T) {
+	e := one(t, "copilot", `{"hook_event_name":"UserPromptSubmit","session_id":"s","timestamp":"2026-11-19T10:00:00Z","cwd":"/c/app","prompt":"add tests"}`)
+	if e.Kind != event.Prompt || e.Harness != "copilot" || e.Project != "app" || e.PromptText != "add tests" {
+		t.Fatalf("%+v", e)
+	}
+	e = one(t, "copilot", `{"hook_event_name":"PostToolUse","cwd":"/c/app","tool_name":"Edit","tool_input":{"old_string":"a","new_string":"b"},"tool_result":{"result_type":"success"}}`)
+	if e.Kind != event.Edit || e.LinesAdded != 1 {
+		t.Fatalf("%+v", e)
+	}
+	if one(t, "copilot", `{"hook_event_name":"Stop","cwd":"/c/app","stop_reason":"end_turn"}`).Kind != event.Stop {
+		t.Fatal("stop")
+	}
+	if one(t, "continue", `{"hook_event_name":"UserPromptSubmit","cwd":"/c/app","prompt":"x"}`).Harness != "continue" {
+		t.Fatal("continue")
+	}
+}
+
+func TestReply(t *testing.T) {
+	if Reply("cursor", []byte(`{"hook_event_name":"beforeSubmitPrompt"}`)) != `{"continue":true}` || Reply("cursor", []byte(`{"hook_event_name":"stop"}`)) != `{}` ||
+		Reply("cursor", []byte(`garbage`)) != `{}` || Reply("claude-code", nil) != "" {
+		t.Fatal("reply")
+	}
+}

@@ -109,3 +109,16 @@ func TestInvalidBatchStoresNothing(t *testing.T) {
 		t.Fatal("partial batch stored")
 	}
 }
+
+func TestPluginsCannotFakePresence(t *testing.T) {
+	h, s := guarded(t)
+	for _, k := range []string{"idle", "active"} {
+		body := `[{"time":"` + now.Format(time.RFC3339) + `","kind":"` + k + `"}]`
+		if w := do(h, "POST", "127.0.0.1:1", "", "application/json", body); w.Code != 400 {
+			t.Errorf("%s accepted: %d", k, w.Code)
+		}
+	}
+	if links, _ := s.Links(); len(links) != 0 {
+		t.Fatal("stored")
+	}
+}

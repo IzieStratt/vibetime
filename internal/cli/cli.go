@@ -23,6 +23,9 @@ import (
 	"github.com/IzieStratt/vibetime/internal/syncer"
 )
 
+// Stdout receives hook replies for harnesses that read one (swapped in tests).
+var Stdout io.Writer = os.Stdout
+
 const DefaultAddr = "127.0.0.1:47391"
 
 func dataDir() string {
@@ -143,6 +146,9 @@ func hook(args []string, stdin io.Reader, stderr io.Writer) int {
 		raw = []byte(args[len(args)-1])
 	} else {
 		raw, _ = io.ReadAll(io.LimitReader(stdin, 4<<20))
+	}
+	if r := hooks.Reply(args[0], raw); r != "" {
+		fmt.Fprintln(Stdout, r) // answer first: the harness may wait for it
 	}
 	evs, err := hooks.Parse(args[0], raw, time.Now())
 	if err != nil {

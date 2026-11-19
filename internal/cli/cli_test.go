@@ -218,3 +218,17 @@ func TestImportHackatimeCLI(t *testing.T) {
 		t.Fatal("unreachable")
 	}
 }
+
+func TestHookReplyForCursor(t *testing.T) {
+	t.Setenv("VIBETIME_HOME", t.TempDir())
+	t.Setenv("VIBETIME_URL", "http://127.0.0.1:1")
+	var out bytes.Buffer
+	saved := Stdout
+	Stdout = &out
+	defer func() { Stdout = saved }()
+	Run([]string{"hook", "cursor"}, strings.NewReader(`{"hook_event_name":"beforeSubmitPrompt","workspace_roots":["/x"],"prompt":"hi"}`), &bytes.Buffer{})
+	Run([]string{"hook", "claude-code"}, strings.NewReader(`{"hook_event_name":"Stop","cwd":"/x"}`), &bytes.Buffer{})
+	if out.String() != "{\"continue\":true}\n" {
+		t.Fatalf("%q", out.String())
+	}
+}
