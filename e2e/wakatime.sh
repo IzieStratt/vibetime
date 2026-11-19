@@ -9,9 +9,11 @@ go build -C "$ROOT" -o "$S/" ./cmd/vibetime
 printf '[settings]\napi_url = http://127.0.0.1:17898/api/v1\napi_key = waka_00000000-0000-4000-8000-000000000000\n' > "$S/wakatime.cfg"
 "$S/vibetime" serve -addr 127.0.0.1:17898 -db "$S/e.db" 2>/dev/null & sleep 1
 now=$(date +%s)
+# newer wakatime-cli scans AI tools' transcripts on every heartbeat; skip that in tests
+noai=""; wakatime-cli --help 2>&1 | grep -q -- --sync-ai-disabled && noai=--sync-ai-disabled
 i=0
 for p in "neovim/0.11 vim-wakatime/11.0" "vscode/1.106 vscode-wakatime/25.0" "zed/0.210 zed-wakatime/0.1"; do
-  WAKATIME_HOME="$S" wakatime-cli --config "$S/wakatime.cfg" --sync-ai-disabled --heartbeat-rate-limit-seconds 0 \
+  WAKATIME_HOME="$S" wakatime-cli --config "$S/wakatime.cfg" $noai --heartbeat-rate-limit-seconds 0 \
     --entity "$S/proj/main.go" --plugin "$p" --time $((now - 120 + i * 60)) --write --timeout 10 </dev/null
   i=$((i + 1))
 done

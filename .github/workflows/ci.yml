@@ -60,5 +60,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
-      - run: go install github.com/wakatime/wakatime-cli@latest && sudo apt-get install -y sqlite3
-      - run: PATH="$(go env GOPATH)/bin:$PATH" ./e2e/wakatime.sh
+      - run: |
+          sudo apt-get install -y sqlite3 unzip
+          curl -fsSL -o /tmp/w.zip https://github.com/wakatime/wakatime-cli/releases/download/v2.28.4/wakatime-cli-linux-amd64.zip
+          unzip -q /tmp/w.zip -d /tmp/w && sudo mv /tmp/w/wakatime-cli-linux-amd64 /usr/local/bin/wakatime-cli
+          wakatime-cli --version
+      - run: ./e2e/wakatime.sh
