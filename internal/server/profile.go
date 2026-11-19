@@ -45,6 +45,9 @@ td:last-child{text-align:right;font-variant-numeric:tabular-nums;color:var(--mut
 </div>
 <h2>Projects</h2>
 <table id="projects"></table>
+<div id="imp" hidden><h2>Imported history (unverified)</h2>
+<p class="sub">From Hackatime before vibetime. Shown for context; it never counts toward submissions.</p>
+<table id="imported"></table></div>
 </main>
 <script>
 const handle = {{.Handle}}, tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -81,6 +84,9 @@ async function refresh() {
   Object.entries(s.projects).sort((a, b) => b[1] - a[1]).forEach(([p, sec]) => {
     const row = t.insertRow(); row.insertCell().textContent = p; row.insertCell().textContent = fmt(sec);
   });
+  const imp = Object.entries(s.imported || {}); document.getElementById("imp").hidden = !imp.length;
+  const it = document.getElementById("imported"); it.replaceChildren();
+  imp.sort((a, b) => b[1] - a[1]).forEach(([p, sec]) => { const row = it.insertRow(); row.insertCell().textContent = p; row.insertCell().textContent = fmt(sec); });
 }
 refresh();
 new EventSource({{.LiveURL}}).onmessage = refresh;

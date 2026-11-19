@@ -28,6 +28,9 @@ type Insights struct {
 	BestDay        Day     `json:"best_day"`
 	WeekSeconds    int64   `json:"week_seconds"`
 	PrevWeek       int64   `json:"prev_week_seconds"`
+	// Unverified history imported from other trackers; never part of verified totals.
+	Imported        map[string]int64 `json:"imported"`
+	ImportedSeconds int64            `json:"imported_seconds"`
 }
 
 // UserInsights computes motivation stats. Minutes are merged across devices exactly as
@@ -98,6 +101,7 @@ func (s *Server) UserInsights(u user, loc *time.Location) (Insights, error) {
 		}
 	}
 	in.CurrentStreak, in.LongestStreak = streaks(in.Days)
+	in.Imported, in.ImportedSeconds = s.importedTotals(u)
 	if total > 0 {
 		in.PromptsPerHour = float64(in.Prompts) / (float64(total) / 3600)
 	}

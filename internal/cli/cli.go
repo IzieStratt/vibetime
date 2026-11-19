@@ -59,13 +59,15 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 		return login(args[1:], stderr)
 	case "submit":
 		return submit(args[1:], stderr)
+	case "import-hackatime":
+		return importHackatime(args[1:], stderr)
 	case "service":
 		return svc(args[1:], stderr)
 	case "version":
 		fmt.Fprintln(stderr, "vibetime 0.1.0")
 		return 0
 	}
-	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|login|submit|service install|service uninstall|version]\n")
+	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|login|submit|import-hackatime|service install|service uninstall|version]\n")
 	return 2
 }
 
@@ -251,5 +253,34 @@ func svc(args []string, stderr io.Writer) int {
 	} else {
 		fmt.Fprintln(stderr, "uninstalled")
 	}
+	return 0
+}
+
+func importHackatime(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("import-hackatime", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	key := fs.String("key", os.Getenv("HACKATIME_API_KEY"), "Hackatime API key (or HACKATIME_API_KEY)")
+	since := fs.String("since", "2024-01-01", "first day to import (YYYY-MM-DD)")
+	base := fs.String("hackatime-url", syncer.HackatimeURL, "Hackatime API base")
+	if err := fs.Parse(args); err != nil || *key == "" {
+		fmt.Fprintln(stderr, "usage: vibetime import-hackatime -key KEY [-since 2024-01-01]")
+		return 2
+	}
+	from, err := time.Parse("2006-01-02", *since)
+	if err != nil {
+		fmt.Fprintln(stderr, "import-hackatime: -since must be YYYY-MM-DD")
+		return 2
+	}
+	cfg, err := syncer.LoadConfig(dataDir())
+	if err != nil {
+		fmt.Fprintln(stderr, "import-hackatime: not logged in (run vibetime login)")
+		return 1
+	}
+	n, err := (&syncer.Syncer{Cfg: cfg, Now: time.Now}).ImportHackatime(*base, *key, from, time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, "import-hackatime:", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "imported %d project-days from Hackatime (shown as unverified; they never count toward submissions)\n", n)
 	return 0
 }

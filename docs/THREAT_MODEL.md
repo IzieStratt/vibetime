@@ -55,7 +55,7 @@ Every row names the code that handles it and the test that attacks it. **Blocked
 | C1 | Time logged in repo X submitted for Y | **Flagged**: every event carries its normalized git remote, and a mismatch raises `repo_mismatch` | `hooks.RepoFor`, `verify.repoChecks` / `TestC1Laundering` |
 | C2 | Copied repo / no real output | **Flagged**: GitHub's *own* push timestamps (activity API, not forgeable commit dates). `no_pushes` in the window, `lines_mismatch` (>10x off) | `gitev`, `verify` / `TestCommits`, `TestC2GitEvidence` |
 | C3 | Redact everything | **Neutral by design**: redaction is the privacy default, so it's informational only. Every detector works on prompt length and hashes, and redaction can't change the hash because the chain commits to sha256(prompt) | `event.Redacted` / `TestRedactionPreservesHash`, `TestC3HeavyRedaction` |
-| C4 | Import unverifiable Hackatime hours | **Blocked**: there's no import path into verified hours. Only anchored events count | design |
+| C4 | Import unverifiable Hackatime hours | **Blocked**: imports go to a separate `imported` table, shown as unverified history, never in stats, insights totals or submissions | `server/importer.go` / `TestImportHackatime`, `TestImportEndpointAndInsights` |
 | D3 | Same bot or prompts shared across accounts | **Flagged**: `duplicate_prompts` when a distinctive prompt (40+ chars) hash appears in another account's submission | `server.submit` / `TestDuplicatePromptsAcrossAccounts` |
 
 ### Review backstops

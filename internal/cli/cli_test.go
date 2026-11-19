@@ -190,3 +190,31 @@ func TestServiceCLI(t *testing.T) {
 		t.Fatal(calls)
 	}
 }
+
+func TestImportHackatimeCLI(t *testing.T) {
+	t.Setenv("VIBETIME_HOME", t.TempDir())
+	t.Setenv("HACKATIME_API_KEY", "")
+	var b bytes.Buffer
+	if Run([]string{"import-hackatime"}, nil, &b) != 2 || Run([]string{"import-hackatime", "-key", "k", "-since", "jan"}, nil, &b) != 2 {
+		t.Fatal("usage")
+	}
+	if Run([]string{"import-hackatime", "-key", "k"}, nil, &b) != 1 {
+		t.Fatal("not logged in")
+	}
+	srv, _ := server.Open(filepath.Join(t.TempDir(), "s.db"))
+	srv.OpenSignup = true
+	ts := httptest.NewServer(srv.Handler())
+	defer func() { ts.Close(); srv.Close() }()
+	hk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"range":{"date":"2026-01-01"},"projects":[{"name":"site","total_seconds":600}]}]}`))
+	}))
+	defer hk.Close()
+	Run([]string{"login", "-server", ts.URL, "-handle", "rowan"}, nil, &b)
+	b.Reset()
+	if Run([]string{"import-hackatime", "-key", "k", "-since", time.Now().Format("2006-01-02"), "-hackatime-url", hk.URL}, nil, &b) != 0 || !strings.Contains(b.String(), "imported 1") {
+		t.Fatal(b.String())
+	}
+	if Run([]string{"import-hackatime", "-key", "k", "-hackatime-url", "http://127.0.0.1:1"}, nil, &b) != 1 {
+		t.Fatal("unreachable")
+	}
+}
