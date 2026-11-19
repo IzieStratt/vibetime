@@ -19,7 +19,9 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// WAL + busy_timeout lets a reader (e.g. `vibetime submit` or tests) coexist with the
+	// running agent's writer; without WAL, Windows file-locking blocks the second opener.
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
