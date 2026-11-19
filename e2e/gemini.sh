@@ -6,7 +6,7 @@ S=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$S"' EXIT
 mkdir -p "$S/bin" "$S/home" "$S/h/.gemini" "$S/proj"
 go build -C "$ROOT" -o "$S/bin/" ./cmd/vibetime
 git -C "$S/proj" init -q && git -C "$S/proj" remote add origin https://github.com/rowan/gemini-demo
-sed "s#\"vibetime hook#\"$S/bin/vibetime hook#g" "$ROOT/plugins/gemini-cli/settings.json" |
+sed "s#\"vibetime hook#\"VIBETIME_URL=http://127.0.0.1:17896 VIBETIME_HOME=$S/home $S/bin/vibetime hook#g" "$ROOT/plugins/gemini-cli/settings.json" |
   node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const j=JSON.parse(s);j.security={auth:{selectedType:"gemini-api-key"}};process.stdout.write(JSON.stringify(j))})' > "$S/h/.gemini/settings.json"
 node "$ROOT/e2e/fake-gemini.mjs" 17897 & 
 export VIBETIME_HOME="$S/home" VIBETIME_URL=http://127.0.0.1:17896
