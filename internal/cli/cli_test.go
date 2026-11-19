@@ -87,9 +87,22 @@ func TestServeAndHookE2E(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	// Codex passes JSON as last argv
+	// Codex passes JSON as last argv. The hook client has a deliberately short timeout so it
+	// never blocks the harness; if a send is slow (cold server under -race), the next hook
+	// flushes the spool, so retry as real usage would.
 	codex := fmt.Sprintf(`{"type":"agent-turn-complete","cwd":%q,"input-messages":["x"]}`, cwd)
-	Run([]string{"hook", "codex", codex}, nil, &errb)
+	flushed := false
+	for i := 0; i < 50; i++ {
+		Run([]string{"hook", "codex", codex}, nil, &errb)
+		if _, err := os.Stat(filepath.Join(home, "spool.jsonl")); os.IsNotExist(err) {
+			flushed = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !flushed {
+		t.Fatal("spool not flushed")
+	}
 
 	r, err := http.Get("http://" + addr + "/v1/summary")
 	if err != nil {
@@ -98,9 +111,6 @@ func TestServeAndHookE2E(t *testing.T) {
 	defer r.Body.Close()
 	var m struct{ Head string }
 	json.NewDecoder(r.Body).Decode(&m)
-	if _, err := os.Stat(filepath.Join(home, "spool.jsonl")); !os.IsNotExist(err) {
-		t.Fatal("spool not flushed")
-	}
 	if len(m.Head) != 64 {
 		t.Fatalf("head %q", m.Head)
 	}
