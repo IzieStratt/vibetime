@@ -96,6 +96,26 @@ func TestLiveSyncThenSubmit(t *testing.T) {
 	if st.Projects["cs2"] < 30*60 || st.Projects["homework"] == 0 {
 		t.Fatalf("live stats %+v", st)
 	}
+	in, err := srv.UserInsights(struct {
+		ID       int64
+		Handle   string
+		Reviewer bool
+		Public   bool
+	}{1, "rowan", false, true}, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modes := in.HandsOn + in.Steering + in.Watching
+	var total int64
+	for _, d := range in.Days {
+		total += d.Seconds
+	}
+	if in.HandsOn == 0 || in.Steering == 0 || modes < total-int64(len(in.Projects))*60 || modes > total+60 {
+		t.Fatalf("modes %d/%d/%d sum %d vs total %d", in.HandsOn, in.Steering, in.Watching, modes, total)
+	}
+	if in.Prompts != 20 || in.AILines != 60 {
+		t.Fatalf("steering counts %+v", in)
+	}
 
 	sub, err := sy.Submit("cs2", repo, t0, m.Add(3*time.Minute), false)
 	if err != nil {

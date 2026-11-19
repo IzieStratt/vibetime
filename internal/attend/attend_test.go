@@ -164,3 +164,29 @@ func TestPromptUntilStopCounts(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestModes(t *testing.T) {
+	// hands-on 2 min, then prompt with a 4 min gap: 2 min steering + 2 min watching
+	evs := []event.Event{at(0, event.Heartbeat, "a"), at(1, event.Heartbeat, "a"), at(2, event.Prompt, "a"), at(6, event.Heartbeat, "a")}
+	var tot MinuteModes
+	for _, mm := range MinutesByMode(evs, Default)["a"] {
+		for i := range mm {
+			tot[i] += mm[i]
+		}
+	}
+	if tot[HandsOn] != 2*time.Minute || tot[Steering] != 2*time.Minute || tot[Watching] != 2*time.Minute {
+		t.Fatalf("%v", tot)
+	}
+	// every scenario: modes sum to Minutes exactly
+	for _, evs := range [][]event.Event{evs, every(0, 60, 0.7, event.Heartbeat, "a"),
+		{at(0, event.Prompt, "a"), at(0.5, event.Stop, "a")}, {prompt(0, "continue"), prompt(0.5, "continue"), prompt(3, "x")}} {
+		plain := Minutes(evs, Default)
+		for p, mins := range MinutesByMode(evs, Default) {
+			for k, mm := range mins {
+				if mm[0]+mm[1]+mm[2] != plain[p][k] {
+					t.Fatalf("minute %d: modes %v != %v", k, mm, plain[p][k])
+				}
+			}
+		}
+	}
+}

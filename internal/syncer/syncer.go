@@ -105,9 +105,11 @@ func (s *Syncer) Tick() error {
 		}
 		return agg[k]
 	}
-	for p, mins := range attend.Minutes(evs, attend.Default) {
-		for m, d := range mins {
-			get(p, m).Seconds = int(d / time.Second)
+	for p, mins := range attend.MinutesByMode(evs, attend.Default) {
+		for m, mm := range mins {
+			sm := get(p, m)
+			sm.Seconds = int((mm[0] + mm[1] + mm[2]) / time.Second)
+			sm.HandsOn, sm.Steering, sm.Watching = int(mm[attend.HandsOn]/time.Second), int(mm[attend.Steering]/time.Second), int(mm[attend.Watching]/time.Second)
 		}
 	}
 	for _, e := range evs {

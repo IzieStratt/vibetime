@@ -72,7 +72,7 @@ func Open(path string) (*Server, error) {
 		return nil, err
 	}
 	db.Exec(`ALTER TABLE users ADD COLUMN oauth_sub TEXT`) // migration; errors when already present
-	for _, c := range []string{"prompts", "ai_lines", "human_edits"} {
+	for _, c := range []string{"prompts", "ai_lines", "human_edits", "hands_on", "steering", "watching"} {
 		db.Exec(`ALTER TABLE minutes ADD COLUMN ` + c + ` INTEGER NOT NULL DEFAULT 0`)
 	}
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_oauth ON users(oauth_sub)`)
@@ -222,6 +222,10 @@ type SyncMinute struct {
 	Prompts    int `json:"prompts,omitempty"`
 	AILines    int `json:"ai_lines,omitempty"`
 	HumanEdits int `json:"human_edits,omitempty"`
+	// How the attended seconds split (hands-on, steering, watching the agent).
+	HandsOn  int `json:"hands_on,omitempty"`
+	Steering int `json:"steering,omitempty"`
+	Watching int `json:"watching,omitempty"`
 }
 
 type SyncRequest struct {
@@ -259,9 +263,11 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request, u user) {
 		}
 		sec := min(max(m.Seconds, 0), 60)
 		clamp := func(n int) int { return min(max(n, 0), 10000) }
-		tx.Exec(`INSERT INTO minutes(user_id, device, project, minute, seconds, prompts, ai_lines, human_edits) VALUES(?,?,?,?,?,?,?,?)
+		tx.Exec(`INSERT INTO minutes(user_id, device, project, minute, seconds, prompts, ai_lines, human_edits, hands_on, steering, watching) VALUES(?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(user_id, device, project, minute) DO UPDATE SET seconds = excluded.seconds, prompts = excluded.prompts,
-			ai_lines = excluded.ai_lines, human_edits = excluded.human_edits`, u.ID, in.Device, m.Project, m.Minute, sec, clamp(m.Prompts), clamp(m.AILines), clamp(m.HumanEdits))
+			ai_lines = excluded.ai_lines, human_edits = excluded.human_edits, hands_on = excluded.hands_on, steering = excluded.steering,
+			watching = excluded.watching`, u.ID, in.Device, m.Project, m.Minute, sec, clamp(m.Prompts), clamp(m.AILines), clamp(m.HumanEdits),
+			min(max(m.HandsOn, 0), 60), min(max(m.Steering, 0), 60), min(max(m.Watching, 0), 60))
 		accepted++
 	}
 	if err := tx.Commit(); err != nil {
