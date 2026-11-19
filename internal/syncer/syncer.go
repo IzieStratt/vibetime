@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/IzieStratt/vibetime/internal/attend"
+	"github.com/IzieStratt/vibetime/internal/event"
 	"github.com/IzieStratt/vibetime/internal/server"
 	"github.com/IzieStratt/vibetime/internal/store"
 )
@@ -92,11 +93,40 @@ func (s *Syncer) Tick() error {
 	n, _ := s.Store.Count()
 	req := server.SyncRequest{Device: s.Cfg.Device, Head: s.Store.Head(), Count: n}
 	oldest := now.Add(-14 * time.Minute).Truncate(time.Minute).Unix()
+	type key struct {
+		p string
+		m int64
+	}
+	agg := map[key]*server.SyncMinute{}
+	get := func(p string, m int64) *server.SyncMinute {
+		k := key{p, m}
+		if agg[k] == nil {
+			agg[k] = &server.SyncMinute{Project: p, Minute: m}
+		}
+		return agg[k]
+	}
 	for p, mins := range attend.Minutes(evs, attend.Default) {
 		for m, d := range mins {
-			if m >= oldest && m <= now.Unix() {
-				req.Minutes = append(req.Minutes, server.SyncMinute{Project: p, Minute: m, Seconds: int(d / time.Second)})
-			}
+			get(p, m).Seconds = int(d / time.Second)
+		}
+	}
+	for _, e := range evs {
+		if e.Project == "" {
+			continue
+		}
+		m := e.Time.Truncate(time.Minute).Unix()
+		switch {
+		case e.Kind == event.Prompt:
+			get(e.Project, m).Prompts++
+		case e.Kind == event.Edit && e.Human:
+			get(e.Project, m).HumanEdits++
+		case e.Kind == event.Edit:
+			get(e.Project, m).AILines += e.LinesAdded + e.LinesRemoved
+		}
+	}
+	for _, sm := range agg {
+		if sm.Minute >= oldest && sm.Minute <= now.Unix() {
+			req.Minutes = append(req.Minutes, *sm)
 		}
 	}
 	return s.post("/api/v1/sync", req, nil)

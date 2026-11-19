@@ -172,12 +172,12 @@ func TestSyncRejectsBackfillAndClamps(t *testing.T) {
 	a.add(event.Event{Time: t0, Kind: event.Prompt, Project: "cs2"})
 	now := t0.Add(30 * time.Minute)
 	m := a.sync(now,
-		SyncMinute{"cs2", now.Add(-2 * time.Minute).Unix(), 60},  // ok
-		SyncMinute{"cs2", now.Add(-time.Minute).Unix(), 500},     // ok, clamped to 60
-		SyncMinute{"cs2", now.Add(-20 * time.Minute).Unix(), 60}, // too old
-		SyncMinute{"cs2", now.Add(time.Hour).Unix(), 60},         // future
-		SyncMinute{"cs2", now.Unix() - 61, 60},                   // not minute aligned
-		SyncMinute{"", now.Add(-3 * time.Minute).Unix(), 60},     // no project
+		SyncMinute{Project: "cs2", Minute: now.Add(-2 * time.Minute).Unix(), Seconds: 60},  // ok
+		SyncMinute{Project: "cs2", Minute: now.Add(-time.Minute).Unix(), Seconds: 500},     // ok, clamped to 60
+		SyncMinute{Project: "cs2", Minute: now.Add(-20 * time.Minute).Unix(), Seconds: 60}, // too old
+		SyncMinute{Project: "cs2", Minute: now.Add(time.Hour).Unix(), Seconds: 60},         // future
+		SyncMinute{Project: "cs2", Minute: now.Unix() - 61, Seconds: 60},                   // not minute aligned
+		SyncMinute{Project: "", Minute: now.Add(-3 * time.Minute).Unix(), Seconds: 60},     // no project
 	)
 	if m["accepted"] != 2 || m["rejected"] != 4 {
 		t.Fatal(m)
@@ -207,8 +207,8 @@ func TestCrossDeviceMerge(t *testing.T) {
 	now := t0.Add(10 * time.Minute)
 	for i := 1; i <= 5; i++ {
 		min := now.Add(-time.Duration(i) * time.Minute).Unix()
-		a.sync(now, SyncMinute{"cs2", min, 60})
-		b.sync(now, SyncMinute{"site", min, 60})
+		a.sync(now, SyncMinute{Project: "cs2", Minute: min, Seconds: 60})
+		b.sync(now, SyncMinute{Project: "site", Minute: min, Seconds: 60})
 	}
 	_, body := e.call("GET", "/api/v1/users/rowan/stats", "", nil)
 	var st Stats
@@ -265,7 +265,7 @@ func TestLiveSSE(t *testing.T) {
 	a := e.agent(tok)
 	a.add(event.Event{Time: t0, Kind: event.Prompt, Project: "cs2"})
 	now := t0.Add(5 * time.Minute)
-	go a.sync(now, SyncMinute{"cs2", now.Add(-time.Minute).Unix(), 42})
+	go a.sync(now, SyncMinute{Project: "cs2", Minute: now.Add(-time.Minute).Unix(), Seconds: 42})
 	done := make(chan Stats)
 	go func() { done <- next() }()
 	select {
