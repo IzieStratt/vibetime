@@ -76,6 +76,9 @@ func Open(path string) (*Server, error) {
 		db.Exec(`ALTER TABLE minutes ADD COLUMN ` + c + ` INTEGER NOT NULL DEFAULT 0`)
 	}
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_oauth ON users(oauth_sub)`)
+	if _, err := db.Exec(importSchema); err != nil {
+		return nil, err
+	}
 	return &Server{path: path, DB: db, Now: time.Now, AuditRate: 0.05, SyncWindow: 15 * time.Minute, Rand: randFloat}, nil
 }
 
@@ -96,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /api/v1/users/{handle}/live", s.live)
 	m.HandleFunc("GET /api/v1/users/{handle}/insights", s.insights)
 	m.HandleFunc("POST /api/v1/submissions", s.auth(s.submit))
+	m.HandleFunc("POST /api/v1/import", s.auth(s.importHistory))
 	m.HandleFunc("GET /api/v1/submissions/{id}", s.auth(s.getSubmission))
 	m.HandleFunc("POST /api/v1/submissions/{id}/review", s.auth(s.review))
 	m.HandleFunc("GET /api/v1/review/queue", s.auth(s.queue))

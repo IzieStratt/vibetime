@@ -22,6 +22,8 @@ Then add the plugin for your harness:
 | Any editor | WakaTime plugins work unchanged: set `api_url = http://127.0.0.1:47391/api/v1` |
 | Anything else | POST JSON events to `http://127.0.0.1:47391/v1/events` (schema: `internal/event`) |
 
+Coming from Hackatime? `vibetime import-hackatime -key YOUR_HACKATIME_KEY` brings your history in, labeled unverified.
+
 Submit a project for a YSWS program:
 
 ```sh

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,5 +86,26 @@ func TestInsightsEndToEnd(t *testing.T) {
 	}
 	if c, _ := e.call("GET", "/api/v1/users/nobody/insights", "", nil); c != 404 {
 		t.Fatal("missing user")
+	}
+}
+
+func TestImportEndpointAndInsights(t *testing.T) {
+	e := newEnv(t)
+	tok := e.user("rowan")
+	c, b := e.call("POST", "/api/v1/import", tok, ImportRequest{Source: "hackatime", Days: []ImportDay{
+		{"2026-10-01", "cs2", 7200}, {"2026-10-02", "cs2", 999999}, {"bad-date", "x", 5}, {"2026-10-03", "", 5}, {"2026-10-03", "y", 0}}})
+	if c != 200 || !strings.Contains(string(b), `"imported":2`) || !strings.Contains(string(b), `"rejected":3`) {
+		t.Fatalf("%d %s", c, b)
+	}
+	for _, body := range []any{"x", ImportRequest{Source: "Bad Source!"}} {
+		if c, _ := e.call("POST", "/api/v1/import", tok, body); c != 400 {
+			t.Errorf("accepted %v", body)
+		}
+	}
+	_, b = e.call("GET", "/api/v1/users/rowan/insights", "", nil)
+	var in Insights
+	json.Unmarshal(b, &in)
+	if in.ImportedSeconds != 7200+86400 || in.Imported["cs2"] != 7200+86400 || in.WeekSeconds != 0 || len(in.Projects) != 0 {
+		t.Fatalf("%+v", in)
 	}
 }

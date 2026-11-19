@@ -88,6 +88,8 @@ test("public profile shows insights and updates live", async () => {
   const mins = Array.from({ length: 12 }, (_, i) => ({ project: "cs2", minute: minute - (i + 1) * 60, seconds: 60, prompts: 1, ai_lines: 5 }));
   mins[0].human_edits = 3;
   await sync(mins);
+  await fetch(base + "/api/v1/import", { method: "POST", headers: { Authorization: "Bearer " + kid, "Content-Type": "application/json" },
+    body: JSON.stringify({ source: "hackatime", days: [{ date: "2026-01-05", project: "old-game", seconds: 7200 }] }) });
   const page = await browser.newPage();
   const errors = []; page.on("pageerror", e => errors.push(e.message));
   await page.goto(base + "/u/rowan");
@@ -97,6 +99,9 @@ test("public profile shows insights and updates live", async () => {
   assert.equal(await page.textContent("#ai"), "60");
   assert.equal(await page.locator("#bars rect").count(), 30);
   assert.match(await page.textContent("#projects"), /cs2/);
+  assert.equal(await page.isVisible("#imp"), true);
+  assert.match(await page.textContent("#imported"), /old-game\s*2h 0m/);
+  assert.doesNotMatch(await page.textContent("#projects"), /old-game/, "imported time is kept apart");
   // live: a new sync updates the page without reloading
   await sync([{ project: "cs2", minute, seconds: 60, prompts: 1 }]);
   await page.waitForFunction(() => document.getElementById("today").textContent === "13m", null, { timeout: 5000 });
