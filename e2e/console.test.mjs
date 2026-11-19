@@ -80,3 +80,28 @@ test("kid cannot use the console", async () => {
   const r = await fetch(base + "/api/v1/review/queue", { headers: { Authorization: "Bearer " + kid } });
   assert.equal(r.status, 403);
 });
+
+test("public profile shows insights and updates live", async () => {
+  const sync = mins => fetch(base + "/api/v1/sync", { method: "POST", headers: { Authorization: "Bearer " + kid, "Content-Type": "application/json" },
+    body: JSON.stringify({ device: "device-e2e-01", head: "a".repeat(64), minutes: mins }) });
+  const minute = Math.floor(Date.now() / 60000) * 60;
+  const mins = Array.from({ length: 12 }, (_, i) => ({ project: "cs2", minute: minute - (i + 1) * 60, seconds: 60, prompts: 1, ai_lines: 5 }));
+  mins[0].human_edits = 3;
+  await sync(mins);
+  const page = await browser.newPage();
+  const errors = []; page.on("pageerror", e => errors.push(e.message));
+  await page.goto(base + "/u/rowan");
+  await page.waitForFunction(() => document.getElementById("today").textContent === "12m");
+  assert.equal(await page.textContent("#prompts"), "12");
+  assert.equal(await page.textContent("#human"), "3");
+  assert.equal(await page.textContent("#ai"), "60");
+  assert.equal(await page.locator("#bars rect").count(), 30);
+  assert.match(await page.textContent("#projects"), /cs2/);
+  // live: a new sync updates the page without reloading
+  await sync([{ project: "cs2", minute, seconds: 60, prompts: 1 }]);
+  await page.waitForFunction(() => document.getElementById("today").textContent === "13m", null, { timeout: 5000 });
+  assert.equal(await page.textContent("#prompts"), "13");
+  await page.setViewportSize({ width: 375, height: 800 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= 375), "no horizontal scroll on phones");
+  assert.deepEqual(errors, []);
+});

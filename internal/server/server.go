@@ -70,6 +70,9 @@ func Open(path string) (*Server, error) {
 		return nil, err
 	}
 	db.Exec(`ALTER TABLE users ADD COLUMN oauth_sub TEXT`) // migration; errors when already present
+	for _, c := range []string{"prompts", "ai_lines", "human_edits"} {
+		db.Exec(`ALTER TABLE minutes ADD COLUMN ` + c + ` INTEGER NOT NULL DEFAULT 0`)
+	}
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_oauth ON users(oauth_sub)`)
 	return &Server{path: path, DB: db, Now: time.Now, AuditRate: 0.05, SyncWindow: 15 * time.Minute, Rand: randFloat}, nil
 }
@@ -89,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/me", s.auth(s.updateMe))
 	m.HandleFunc("GET /api/v1/users/{handle}/stats", s.stats)
 	m.HandleFunc("GET /api/v1/users/{handle}/live", s.live)
+	m.HandleFunc("GET /api/v1/users/{handle}/insights", s.insights)
 	m.HandleFunc("POST /api/v1/submissions", s.auth(s.submit))
 	m.HandleFunc("GET /api/v1/submissions/{id}", s.auth(s.getSubmission))
 	m.HandleFunc("POST /api/v1/submissions/{id}/review", s.auth(s.review))
@@ -208,6 +212,10 @@ type SyncMinute struct {
 	Project string `json:"project"`
 	Minute  int64  `json:"minute"` // unix seconds, minute aligned
 	Seconds int    `json:"seconds"`
+	// Steering counts for the minute (aggregates only, no content).
+	Prompts    int `json:"prompts,omitempty"`
+	AILines    int `json:"ai_lines,omitempty"`
+	HumanEdits int `json:"human_edits,omitempty"`
 }
 
 type SyncRequest struct {
@@ -244,8 +252,10 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request, u user) {
 			continue
 		}
 		sec := min(max(m.Seconds, 0), 60)
-		tx.Exec(`INSERT INTO minutes(user_id, device, project, minute, seconds) VALUES(?,?,?,?,?)
-			ON CONFLICT(user_id, device, project, minute) DO UPDATE SET seconds = excluded.seconds`, u.ID, in.Device, m.Project, m.Minute, sec)
+		clamp := func(n int) int { return min(max(n, 0), 10000) }
+		tx.Exec(`INSERT INTO minutes(user_id, device, project, minute, seconds, prompts, ai_lines, human_edits) VALUES(?,?,?,?,?,?,?,?)
+			ON CONFLICT(user_id, device, project, minute) DO UPDATE SET seconds = excluded.seconds, prompts = excluded.prompts,
+			ai_lines = excluded.ai_lines, human_edits = excluded.human_edits`, u.ID, in.Device, m.Project, m.Minute, sec, clamp(m.Prompts), clamp(m.AILines), clamp(m.HumanEdits))
 		accepted++
 	}
 	if err := tx.Commit(); err != nil {
