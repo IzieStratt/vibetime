@@ -31,6 +31,10 @@ type Insights struct {
 	// Unverified history imported from other trackers; never part of verified totals.
 	Imported        map[string]int64 `json:"imported"`
 	ImportedSeconds int64            `json:"imported_seconds"`
+	// Attention split over the last 30 days, in seconds.
+	HandsOn  int64 `json:"hands_on_seconds"`
+	Steering int64 `json:"steering_seconds"`
+	Watching int64 `json:"watching_seconds"`
 }
 
 // UserInsights computes motivation stats. Minutes are merged across devices exactly as
@@ -39,7 +43,7 @@ func (s *Server) UserInsights(u user, loc *time.Location) (Insights, error) {
 	now := s.Now().In(loc)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	start := today.AddDate(0, 0, -29)
-	rows, err := s.DB.Query(`SELECT project, minute, seconds, prompts, ai_lines, human_edits FROM minutes WHERE user_id = ? AND minute >= ?`,
+	rows, err := s.DB.Query(`SELECT project, minute, seconds, prompts, ai_lines, human_edits, hands_on, steering, watching FROM minutes WHERE user_id = ? AND minute >= ?`,
 		u.ID, start.Add(-24*time.Hour).Unix())
 	if err != nil {
 		return Insights{}, err
@@ -48,17 +52,19 @@ func (s *Server) UserInsights(u user, loc *time.Location) (Insights, error) {
 	type pm struct {
 		project string
 		sec     int64
+		modes   [3]int64
 	}
 	perMin := map[int64][]pm{}
 	in := Insights{Handle: u.Handle, Projects: map[string]int64{}}
 	for rows.Next() {
 		var p string
 		var m, sec, pr, ai, he int64
-		rows.Scan(&p, &m, &sec, &pr, &ai, &he)
+		var md [3]int64
+		rows.Scan(&p, &m, &sec, &pr, &ai, &he, &md[0], &md[1], &md[2])
 		if m < start.Unix() {
 			continue
 		}
-		perMin[m] = append(perMin[m], pm{p, sec})
+		perMin[m] = append(perMin[m], pm{p, sec, md})
 		in.Prompts += pr
 		in.AILines += ai
 		in.HumanEdits += he
@@ -86,6 +92,10 @@ func (s *Server) UserInsights(u user, loc *time.Location) (Insights, error) {
 		}
 		for _, x := range list {
 			if sum > 0 {
+				scale := float64(capped) / float64(sum)
+				in.HandsOn += int64(float64(x.modes[0])*scale + 0.5)
+				in.Steering += int64(float64(x.modes[1])*scale + 0.5)
+				in.Watching += int64(float64(x.modes[2])*scale + 0.5)
 				frac[x.project] += float64(x.sec) * float64(capped) / float64(sum)
 			}
 		}

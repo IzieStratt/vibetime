@@ -9,8 +9,8 @@ var profileTmpl = template.Must(template.New("p").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Handle}} on vibetime</title>
 <style>
-:root{--bg:#fbfaf7;--fg:#1d1b18;--muted:#6d665c;--line:#e6e1d8;--bar:#c2410c;--bar-dim:#f1dccf;--card:#fff}
-@media (prefers-color-scheme:dark){:root{--bg:#151412;--fg:#ece8e1;--muted:#a39b8f;--line:#2d2a26;--bar:#fb923c;--bar-dim:#3a2a20;--card:#1d1c19}}
+:root{--bg:#fbfaf7;--fg:#1d1b18;--muted:#6d665c;--line:#e6e1d8;--bar:#c2410c;--bar-dim:#f1dccf;--card:#fff;--m0:#c2410c;--m1:#2563eb;--m2:#a8a29e}
+@media (prefers-color-scheme:dark){:root{--bg:#151412;--fg:#ece8e1;--muted:#a39b8f;--line:#2d2a26;--bar:#fb923c;--bar-dim:#3a2a20;--card:#1d1c19;--m0:#fb923c;--m1:#60a5fa;--m2:#78716c}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
 main{max-width:720px;margin:0 auto;padding:32px 16px}
 h1{font-size:28px;margin:0 0 4px}h2{font-size:15px;color:var(--muted);font-weight:600;margin:28px 0 8px}
@@ -25,6 +25,9 @@ table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px sol
 td:last-child{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
 .live{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--bar);margin-right:6px}
 #tip{color:var(--muted);font-size:13px;min-height:1.5em;margin-top:6px}
+.split{display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--line)}.split i{display:block;height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:13px;color:var(--muted)}.legend b{color:var(--fg);font-weight:600}
+.legend s{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px;text-decoration:none}
 </style></head><body><main>
 <h1>{{.Handle}}</h1><p class="sub"><span class="live"></span>Attended time building with AI. Updates live.</p>
 <div class="tiles">
@@ -36,6 +39,9 @@ td:last-child{text-align:right;font-variant-numeric:tabular-nums;color:var(--mut
 <h2>Last 30 days</h2>
 <div class="chart"><svg id="bars" viewBox="0 0 300 80" role="img" aria-label="Attended time per day, last 30 days"></svg>
 <div class="axis"><span id="first"></span><span>today</span></div><div id="tip">Days with 15+ minutes keep your streak going.</div></div>
+<h2>Where your attention went</h2>
+<div class="chart"><div class="split" id="split" role="img" aria-label="Attention split"></div>
+<div class="legend" id="splitl"></div></div>
 <h2>How you steered</h2>
 <div class="tiles">
   <div class="tile"><b id="prompts">–</b><span>prompts</span></div>
@@ -80,6 +86,15 @@ async function refresh() {
   set("prompts", s.prompts.toLocaleString()); set("pph", s.prompts_per_hour.toFixed(1));
   set("human", s.human_edits.toLocaleString()); set("ai", s.ai_lines.toLocaleString());
   bars(s.days);
+  const modes = [["hands-on", s.hands_on_seconds, "--m0"], ["steering the AI", s.steering_seconds, "--m1"], ["watching the agent", s.watching_seconds, "--m2"]];
+  const mt = modes.reduce((a, m) => a + m[1], 0), sp = document.getElementById("split"), sl = document.getElementById("splitl");
+  sp.replaceChildren(); sl.replaceChildren();
+  modes.forEach(([name, sec, v]) => {
+    const pct = mt ? Math.round(sec / mt * 100) : 0, seg = document.createElement("i");
+    seg.style.width = pct + "%"; seg.style.background = "var(" + v + ")"; seg.title = name + ": " + fmt(sec); sp.append(seg);
+    const l = document.createElement("span"), sw = document.createElement("s"), b = document.createElement("b");
+    sw.style.background = "var(" + v + ")"; b.textContent = pct + "%"; l.append(sw, b, " " + name); sl.append(l);
+  });
   const t = document.getElementById("projects"); t.replaceChildren();
   Object.entries(s.projects).sort((a, b) => b[1] - a[1]).forEach(([p, sec]) => {
     const row = t.insertRow(); row.insertCell().textContent = p; row.insertCell().textContent = fmt(sec);
