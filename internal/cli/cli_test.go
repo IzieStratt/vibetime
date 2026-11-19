@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,13 +246,32 @@ func TestHookReplyForCursor(t *testing.T) {
 
 // Contract test: each editor's documented hook payload, driven through the real `vibetime
 // hook` CLI, must parse into the right events. Payload shapes are copied from each vendor's
-// docs (Cursor, Copilot, Augment, Continue). We run with the agent down so everything spools
-// to a plain JSONL file we can read without a second DB handle (and without the proprietary
-// agents, which need accounts). This pins our side of each contract.
+// docs (Cursor, Copilot, Augment, Continue). The hook posts to a recording server here (we
+// can't drive the proprietary agents, which need accounts); this pins our side of each
+// contract deterministically on every platform.
 func TestEditorHookContracts(t *testing.T) {
+	var mu sync.Mutex
+	byHarness := map[string]map[event.Kind]int{}
+	rec := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var evs []event.Event
+		json.NewDecoder(r.Body).Decode(&evs)
+		mu.Lock()
+		for _, e := range evs {
+			if byHarness[e.Harness] == nil {
+				byHarness[e.Harness] = map[event.Kind]int{}
+			}
+			byHarness[e.Harness][e.Kind]++
+			if e.Project != "cs2" {
+				t.Errorf("wrong project %q from %s", e.Project, e.Harness)
+			}
+		}
+		mu.Unlock()
+		w.WriteHeader(202)
+	}))
+	defer rec.Close()
 	home := t.TempDir()
 	t.Setenv("VIBETIME_HOME", home)
-	t.Setenv("VIBETIME_URL", "http://127.0.0.1:1") // nothing listening: hooks spool
+	t.Setenv("VIBETIME_URL", rec.URL)
 	cwd := filepath.Join(home, "cs2")
 	os.MkdirAll(cwd, 0o755)
 	q := func(s string) string { return strings.ReplaceAll(s, "CWD", cwd) }
@@ -276,24 +296,8 @@ func TestEditorHookContracts(t *testing.T) {
 			t.Fatalf("%s hook exit: %s", c.vendor, errb.String())
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(home, "spool.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	byHarness := map[string]map[event.Kind]int{}
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		var e event.Event
-		if json.Unmarshal([]byte(line), &e) != nil {
-			continue
-		}
-		if e.Project != "cs2" {
-			t.Fatalf("wrong project %q from %s", e.Project, e.Harness)
-		}
-		if byHarness[e.Harness] == nil {
-			byHarness[e.Harness] = map[event.Kind]int{}
-		}
-		byHarness[e.Harness][e.Kind]++
-	}
+	mu.Lock()
+	defer mu.Unlock()
 	for _, v := range []string{"cursor", "copilot", "augment", "continue"} {
 		if byHarness[v][event.Prompt] == 0 {
 			t.Errorf("%s: no prompt event landed (%v)", v, byHarness[v])
