@@ -242,3 +242,31 @@ func TestHookReplyForCursor(t *testing.T) {
 		t.Fatalf("%q", out.String())
 	}
 }
+
+func TestStatusCLI(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("VIBETIME_HOME", home)
+	st, _ := store.Open(filepath.Join(home, "events.db"))
+	now := time.Now()
+	for i := 0; i <= 10; i++ {
+		st.Append(event.Event{Time: now.Add(time.Duration(i-10) * time.Minute), Kind: event.Heartbeat, Project: "cs2"})
+	}
+	st.Close()
+	var out bytes.Buffer
+	saved := Stdout
+	Stdout = &out
+	defer func() { Stdout = saved }()
+	if Run([]string{"status"}, nil, &bytes.Buffer{}) != 0 {
+		t.Fatal("status exit")
+	}
+	if !strings.Contains(out.String(), "cs2") || !strings.Contains(out.String(), "vibetime —") {
+		t.Fatalf("%s", out.String())
+	}
+	var errb bytes.Buffer
+	if Run([]string{"status", "-days", "x"}, nil, &errb) != 2 {
+		t.Fatal("bad flag")
+	}
+	if Run([]string{"status", "-db", filepath.Join(home, "no", "x.db")}, nil, &errb) != 1 {
+		t.Fatal("bad db")
+	}
+}

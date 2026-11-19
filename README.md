@@ -36,6 +36,13 @@ vibetime submit -project cs2 -repo github.com/you/cs2 -from 2026-11-01T00:00:00Z
 
 Prompts stay on your machine. Only their hashes and lengths are uploaded, unless you pass `-include-prompts`.
 
+See your own time, offline, anytime:
+
+```sh
+vibetime status            # today, last 7 days, attention split, per project
+vibetime status -days 30
+```
+
 ## How hours are made trustworthy
 
 The agent appends every event to a local hash chain and sends the chain head to the server every minute. A submission only counts events covered by heads the server received *at the time*, so history can't be backfilled or made up later. Submissions are also checked server-side and a human reviews anything suspicious.
