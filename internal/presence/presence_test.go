@@ -3,6 +3,8 @@ package presence
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"runtime"
 	"testing"
 	"time"
@@ -88,5 +90,26 @@ func TestSystemIdleReal(t *testing.T) {
 	}
 	if d < 0 || d > 30*24*time.Hour {
 		t.Fatalf("implausible idle %v", d)
+	}
+}
+
+// On a real display, synthetic input must reset the OS idle counter.
+// VIBETIME_PRESENCE_INPUT is a shell command that moves the mouse (CI: xdotool under Xvfb).
+func TestSystemIdleResetsOnInput(t *testing.T) {
+	cmd := os.Getenv("VIBETIME_PRESENCE_INPUT")
+	if cmd == "" {
+		t.Skip("set VIBETIME_PRESENCE_INPUT")
+	}
+	time.Sleep(2500 * time.Millisecond)
+	before, err := System()
+	if err != nil || before < 2*time.Second {
+		t.Fatalf("idle should have grown: %v %v", before, err)
+	}
+	if out, err := exec.Command("sh", "-c", cmd).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	after, err := System()
+	if err != nil || after >= before || after > time.Second {
+		t.Fatalf("input did not reset idle: before %v after %v (%v)", before, after, err)
 	}
 }
