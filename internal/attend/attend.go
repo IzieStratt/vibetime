@@ -53,17 +53,20 @@ func Minutes(events []event.Event, cfg Config) map[string]map[int64]time.Duratio
 
 // spans calls emit for every credited interval.
 func spans(events []event.Event, cfg Config, emit func(project string, from, to time.Time)) {
-	var tl []event.Event
+	var tl, stops []event.Event
 	for _, e := range events {
 		if e.IsHumanActivity() || e.Kind == event.Idle {
 			tl = append(tl, e)
+		} else if e.Kind == event.Stop {
+			stops = append(stops, e)
 		}
 	}
+	sort.SliceStable(stops, func(i, j int) bool { return stops[i].Time.Before(stops[j].Time) })
 	sort.SliceStable(tl, func(i, j int) bool { return tl[i].Time.Before(tl[j].Time) })
 
 	prevLow := false
-	for i := 0; i+1 < len(tl); i++ {
-		cur, next := tl[i], tl[i+1]
+	for i := 0; i < len(tl); i++ {
+		cur := tl[i]
 		if cur.Kind == event.Idle {
 			continue
 		}
@@ -76,8 +79,25 @@ func spans(events []event.Event, cfg Config, emit func(project string, from, to 
 			}
 			prevLow = low
 		}
-		if gap := next.Time.Sub(cur.Time); gap > 0 && gap <= limit {
-			emit(cur.Project, cur.Time, next.Time)
+		if i+1 < len(tl) {
+			if gap := tl[i+1].Time.Sub(cur.Time); gap > 0 && gap <= limit {
+				emit(cur.Project, cur.Time, tl[i+1].Time)
+				continue
+			}
+		}
+		// The last prompt before a break: credit watching the agent until it stopped
+		// (within the allowance and before any idle or later activity).
+		if cur.Kind == event.Prompt {
+			end := cur.Time.Add(limit)
+			if i+1 < len(tl) && tl[i+1].Time.Before(end) {
+				end = tl[i+1].Time
+			}
+			for _, s := range stops {
+				if s.Project == cur.Project && s.Time.After(cur.Time) && !s.Time.After(end) {
+					emit(cur.Project, cur.Time, s.Time)
+					break
+				}
+			}
 		}
 	}
 }

@@ -144,3 +144,23 @@ func TestContinueFarmingDecays(t *testing.T) {
 		t.Fatalf("redacted: %v", Compute(red, Default))
 	}
 }
+
+// Found in a real Claude Code run: prompt, agent works 23s, stops, session ends.
+func TestPromptUntilStopCounts(t *testing.T) {
+	evs := []event.Event{at(0, event.SessionStart, "a"), at(0.01, event.Prompt, "a"), at(0.3, event.Edit, "a"), at(0.4, event.Stop, "a")}
+	if got := Compute(evs, Default)["a"]; got != 24*time.Second {
+		t.Fatalf("got %v", got)
+	}
+	// stop beyond the watch cap: nothing
+	if got := Compute([]event.Event{at(0, event.Prompt, "a"), at(20, event.Stop, "a")}, Default)["a"]; got != 0 {
+		t.Fatal(got)
+	}
+	// idle before the stop cuts it
+	if got := Compute([]event.Event{at(0, event.Prompt, "a"), at(1, event.Idle, ""), at(3, event.Stop, "a")}, Default)["a"]; got != time.Minute {
+		t.Fatal(got)
+	}
+	// other project's stop doesn't count
+	if got := Compute([]event.Event{at(0, event.Prompt, "a"), at(1, event.Stop, "b")}, Default)["a"]; got != 0 {
+		t.Fatal(got)
+	}
+}
