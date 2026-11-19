@@ -18,6 +18,7 @@ import (
 	"github.com/IzieStratt/vibetime/internal/event"
 	"github.com/IzieStratt/vibetime/internal/hooks"
 	"github.com/IzieStratt/vibetime/internal/presence"
+	"github.com/IzieStratt/vibetime/internal/report"
 	"github.com/IzieStratt/vibetime/internal/service"
 	"github.com/IzieStratt/vibetime/internal/store"
 	"github.com/IzieStratt/vibetime/internal/syncer"
@@ -58,6 +59,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 		return serve(ctx, args[1:], stderr)
 	case "hook":
 		return hook(args[1:], stdin, stderr)
+	case "status":
+		return status(args[1:], stderr)
 	case "login":
 		return login(args[1:], stderr)
 	case "submit":
@@ -70,7 +73,7 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 		fmt.Fprintln(stderr, "vibetime 0.1.0")
 		return 0
 	}
-	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|login|submit|import-hackatime|service install|service uninstall|version]\n")
+	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|status|login|submit|import-hackatime|service install|service uninstall|version]\n")
 	return 2
 }
 
@@ -288,5 +291,29 @@ func importHackatime(args []string, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stderr, "imported %d project-days from Hackatime (shown as unverified; they never count toward submissions)\n", n)
+	return 0
+}
+
+func status(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	days := fs.Int("days", 7, "number of days to summarize")
+	db := fs.String("db", filepath.Join(dataDir(), "events.db"), "SQLite path")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	s, err := store.Open(*db)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer s.Close()
+	now := time.Now()
+	evs, err := s.Range(now.AddDate(0, 0, -*days), now.Add(time.Minute))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprint(Stdout, report.Render(evs, now, *days, time.Local))
 	return 0
 }
