@@ -40,12 +40,17 @@ func agentURL() string {
 
 // Run executes the CLI and returns an exit code.
 func Run(args []string, stdin io.Reader, stderr io.Writer) int {
+	return RunContext(context.Background(), args, stdin, stderr)
+}
+
+// RunContext is Run with cancellation: cancelling ctx shuts `serve` down gracefully.
+func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.Writer) int {
 	if len(args) == 0 {
 		args = []string{"serve"}
 	}
 	switch args[0] {
 	case "serve":
-		return serve(args[1:], stderr)
+		return serve(ctx, args[1:], stderr)
 	case "hook":
 		return hook(args[1:], stdin, stderr)
 	case "version":
@@ -68,7 +73,7 @@ func IsLoopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func serve(args []string, stderr io.Writer) int {
+func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", DefaultAddr, "loopback listen address")
@@ -92,11 +97,23 @@ func serve(args []string, stderr io.Writer) int {
 	defer s.Close()
 	w := &presence.Watcher{Idle: presence.System, Threshold: 2 * time.Minute, Interval: 15 * time.Second, Now: time.Now,
 		Emit: func(e event.Event) { s.Append(e) }}
-	go w.Run(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go w.Run(ctx)
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{Store: s, Now: time.Now}).Handler(), ReadHeaderTimeout: 5 * time.Second}
 	fmt.Fprintf(stderr, "vibetime listening on %s (db %s)\n", *addr, *db)
-	fmt.Fprintln(stderr, srv.ListenAndServe())
-	return 1
+	errc := make(chan error, 1)
+	go func() { errc <- srv.ListenAndServe() }()
+	select {
+	case err := <-errc:
+		fmt.Fprintln(stderr, err)
+		return 1
+	case <-ctx.Done():
+		sc, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		srv.Shutdown(sc)
+		return 0
+	}
 }
 
 // hook reads a harness payload (stdin, or the last argument for Codex notify) and forwards
