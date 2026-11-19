@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -65,7 +66,15 @@ func TestServeAndHookE2E(t *testing.T) {
 		t.Fatal("expected spool")
 	}
 
-	go Run([]string{"serve", "-addr", addr}, nil, &bytes.Buffer{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- RunContext(ctx, []string{"serve", "-addr", addr}, nil, &bytes.Buffer{}) }()
+	t.Cleanup(func() {
+		cancel()
+		if code := <-done; code != 0 {
+			t.Errorf("serve exit %d", code)
+		}
+	})
 	for i := 0; i < 50; i++ {
 		if r, err := http.Get("http://" + addr + "/v1/health"); err == nil {
 			r.Body.Close()
@@ -89,5 +98,23 @@ func TestServeAndHookE2E(t *testing.T) {
 	}
 	if len(m.Head) != 64 {
 		t.Fatalf("head %q", m.Head)
+	}
+}
+
+func TestServeBadDB(t *testing.T) {
+	var b bytes.Buffer
+	f := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(f, nil, 0o600)
+	if Run([]string{"serve", "-addr", freeAddr(t), "-db", filepath.Join(f, "sub", "x.db")}, nil, &b) != 1 {
+		t.Fatal("expected failure for unusable db path")
+	}
+}
+
+func TestServePortInUse(t *testing.T) {
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer l.Close()
+	var b bytes.Buffer
+	if Run([]string{"serve", "-addr", l.Addr().String(), "-db", filepath.Join(t.TempDir(), "x.db")}, nil, &b) != 1 {
+		t.Fatal("expected failure when port busy")
 	}
 }
