@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -127,5 +128,45 @@ func TestOAuthFailures(t *testing.T) {
 	e.s.OAuth.TokenURL = "http://127.0.0.1:1/token"
 	if c, _ := e.browserLogin(); c != 502 {
 		t.Fatal("unreachable provider")
+	}
+}
+
+func TestOAuthIdentityFlowsToUnifiedRecord(t *testing.T) {
+	e := newEnv(t)
+	var gotScope string
+	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authorize":
+			gotScope = r.URL.Query().Get("scope")
+			http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code=good&state="+url.QueryEscape(r.URL.Query().Get("state")), 302)
+		case "/token":
+			json.NewEncoder(w).Encode(map[string]string{"access_token": "at"})
+		case "/userinfo":
+			json.NewEncoder(w).Encode(map[string]any{"sub": "ident!abc", "nickname": "Rowan", "email": "rowan@example.com",
+				"slack_id": "U0ROWAN", "verification_status": "verified", "ysws_eligible": false})
+		}
+	}))
+	defer p.Close()
+	e.withOAuth(p, "sec")
+	_, page := e.browserLogin()
+	tok := tokRe.FindStringSubmatch(page)[1]
+	if gotScope != "openid profile email slack_id verification_status" {
+		t.Fatal(gotScope)
+	}
+	a := e.agent(tok)
+	a.session("cs2", "")
+	_, sub := a.submit("cs2")
+	at := sub.Unified.Airtable
+	if at["Email"] != "rowan@example.com" || at["slack_id"] != "U0ROWAN" || at["Code URL"] != "https://github.com/kid/cs2" {
+		t.Fatalf("%v", at)
+	}
+	if sub.Status != "auto_approved" || at["Optional - Override Hours Spent"] == nil || !strings.Contains(fmt.Sprint(sub.Result.Flags), "not_ysws_eligible") {
+		t.Fatalf("%s %v %v", sub.Status, at, sub.Result.Flags)
+	}
+	// private: identity never appears on the public profile or insights
+	for _, path := range []string{"/u/rowan", "/api/v1/users/rowan/insights", "/api/v1/users/rowan/stats"} {
+		if _, b := e.call("GET", path, "", nil); strings.Contains(string(b), "rowan@example.com") || strings.Contains(string(b), "U0ROWAN") {
+			t.Fatalf("%s leaks identity", path)
+		}
 	}
 }

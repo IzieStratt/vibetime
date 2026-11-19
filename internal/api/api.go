@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/IzieStratt/vibetime/internal/attend"
@@ -71,6 +72,8 @@ type wakaHB struct {
 	Language string  `json:"language"`
 	IsWrite  bool    `json:"is_write"`
 	Lines    int     `json:"lines"`
+	Category string  `json:"category"`
+	AILines  int     `json:"ai_line_changes"`
 }
 
 func (s *Server) waka(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +106,12 @@ func (s *Server) waka(w http.ResponseWriter, r *http.Request) {
 			Project:  h.Project,
 			Language: h.Language,
 			Harness:  "editor",
+		}
+		// wakatime-cli also reports AI tools' own activity (category "ai coding", parsed from their
+		// transcripts). That is the agent working, not the human: record it as an AI edit,
+		// which earns no attended time.
+		if strings.EqualFold(h.Category, "ai coding") {
+			e.Kind, e.Harness, e.LinesAdded = event.Edit, "wakatime-ai", max(h.AILines, 0)
 		}
 		if !s.fresh(e) {
 			resp = append(resp, []any{map[string]string{"error": "stale timestamp"}, 400})

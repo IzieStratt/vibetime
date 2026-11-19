@@ -21,7 +21,7 @@ func main() {
 	openSignup := flag.Bool("open-signup", false, "allow POST /api/v1/signup (dev only; production uses Hack Club login)")
 	webhook := flag.String("webhook", "", "URL notified on submission status changes")
 	audit := flag.Float64("audit-rate", 0.05, "fraction of clean submissions still sent to human review")
-	oauthBase := flag.String("oauth-base", "", "OIDC provider base URL (uses /oauth/authorize, /oauth/token, /oauth/userinfo); client id/secret from OAUTH_CLIENT_ID/OAUTH_CLIENT_SECRET")
+	oauthBase := flag.String("oauth-base", "https://auth.hackclub.com", "OIDC provider base URL; login is enabled when OAUTH_CLIENT_ID is set (uses /oauth/authorize, /oauth/token, /oauth/userinfo); client id/secret from OAUTH_CLIENT_ID/OAUTH_CLIENT_SECRET")
 	publicURL := flag.String("public-url", "", "this server's public URL, e.g. https://vibetime.hackclub.com")
 	addReviewer := flag.String("add-reviewer", "", "create a reviewer account with this handle, print its token, and exit")
 	flag.Parse()
@@ -40,7 +40,7 @@ func main() {
 		return
 	}
 	s.OpenSignup, s.Webhook, s.AuditRate, s.PublicURL = *openSignup, *webhook, *audit, *publicURL
-	if *oauthBase != "" {
+	if os.Getenv("OAUTH_CLIENT_ID") != "" && *oauthBase != "" {
 		s.OAuth = &server.OAuth{ClientID: os.Getenv("OAUTH_CLIENT_ID"), ClientSecret: os.Getenv("OAUTH_CLIENT_SECRET"),
 			AuthorizeURL: *oauthBase + "/oauth/authorize", TokenURL: *oauthBase + "/oauth/token", UserInfoURL: *oauthBase + "/oauth/userinfo",
 			RedirectURL: *publicURL + "/auth/callback"}
