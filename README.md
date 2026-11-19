@@ -19,7 +19,7 @@ Then add the plugin for your harness:
 | OpenCode ≥ 2 | copy `plugins/opencode/vibetime.ts` to `~/.config/opencode/plugins/` |
 | Codex CLI | add `plugins/codex/config.toml` to `~/.codex/config.toml` |
 | Gemini CLI | merge `plugins/gemini-cli/settings.json` into `~/.gemini/settings.json` |
-| Any editor | WakaTime plugins work unchanged: set `api_url = http://127.0.0.1:47391/api/v1` |
+| Any editor (VS Code, Antigravity, Cursor, Windsurf, Zed, Vim/Neovim, JetBrains, Emacs, ...) | Install the editor's WakaTime plugin and set `api_url = http://127.0.0.1:47391/api/v1` in `~/.wakatime.cfg` (any `api_key`). Editor time counts as hands-on. WakaTime's own "ai coding" heartbeats are recorded as agent activity and earn no time |
 | Anything else | POST JSON events to `http://127.0.0.1:47391/v1/events` (schema: `internal/event`) |
 
 Coming from Hackatime? `vibetime import-hackatime -key YOUR_HACKATIME_KEY` brings your history in, labeled unverified.
@@ -38,9 +38,16 @@ The agent appends every event to a local hash chain and sends the chain head to 
 
 ## Server
 
+**Hack Club login:** turn on developer mode in your Hack Club Auth account, then create an app at <https://auth.hackclub.com/developer/apps>:
+- redirect URI `https://<your server>/auth/callback`
+- scopes `openid profile email slack_id verification_status` (all allowed for community apps)
+
+Its client ID and secret go in the env vars below. Email, Slack ID and YSWS eligibility are stored privately. They never appear on profiles, only in submissions for reviewers and programs.
+
+
 ```sh
-vibetime-server -addr :8080 -db vibetime.db -public-url https://vibetime.example \
-  -oauth-base https://auth.hackclub.com -webhook https://ysws.example/hook   # OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET / GITHUB_TOKEN env
+OAUTH_CLIENT_ID=... OAUTH_CLIENT_SECRET=... GITHUB_TOKEN=... \
+vibetime-server -addr :8080 -db vibetime.db -public-url https://vibetime.example -webhook https://ysws.example/hook
 vibetime-server -db vibetime.db -add-reviewer fraudsquad   # prints a reviewer token
 ```
 
@@ -49,7 +56,7 @@ vibetime-server -db vibetime.db -add-reviewer fraudsquad   # prints a reviewer t
 | `/u/<handle>` | public profile, live over SSE |
 | `/review` | reviewer console: queue by risk, timeline, flags, approve / partial / reject |
 | `/auth/login` | Hack Club (OIDC) login, which issues an agent token |
-| `/api/v1/submissions` | submissions API for programs, with a webhook when status changes |
+| `/api/v1/submissions` | submissions API for programs, with a webhook when status changes. Each submission has `unified.airtable` with the Unified YSWS DB field names (`Code URL`, `Email`, `slack_id`, `Optional - Override Hours Spent`, `Optional - Override Hours Spent Justification`) |
 
 **Cost:** a single SQLite-backed binary. The load test (`VIBETIME_LOAD=1 go test -run LoadBudget ./internal/server`) sustains ~7,000 syncs/s on a laptop, against the ~2.5/s that Hackatime's 109,759 h/month needs on average. Storage is about 1.6 GB per month at that volume. A ~$10/month VPS fits well under the $500 cap.
 

@@ -41,7 +41,7 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode, MaxAge: 600})
 	scope := o.Scope
 	if scope == "" {
-		scope = "openid profile"
+		scope = "openid profile email slack_id verification_status" // all allowed for Hack Club Auth community apps
 	}
 	q := url.Values{"response_type": {"code"}, "client_id": {o.ClientID}, "redirect_uri": {o.RedirectURL}, "scope": {scope}, "state": {state}}
 	http.Redirect(w, r, o.AuthorizeURL+"?"+q.Encode(), http.StatusFound)
@@ -125,6 +125,10 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	var info struct {
 		Sub               string `json:"sub"`
 		PreferredUsername string `json:"preferred_username"`
+		Email             string `json:"email"`
+		SlackID           string `json:"slack_id"`
+		Verification      string `json:"verification_status"`
+		YSWSEligible      *bool  `json:"ysws_eligible"`
 		Nickname          string `json:"nickname"`
 		Name              string `json:"name"`
 	}
@@ -138,6 +142,7 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	var handle string
 	if err := s.DB.QueryRow(`SELECT handle FROM users WHERE oauth_sub = ?`, info.Sub).Scan(&handle); err == nil {
 		s.DB.Exec(`UPDATE users SET token_sha = ? WHERE oauth_sub = ?`, sha(apiTok), info.Sub)
+		s.saveIdentity(info.Sub, info.Email, info.SlackID, info.Verification, info.YSWSEligible)
 	} else {
 		name := info.PreferredUsername
 		for _, n := range []string{info.Nickname, info.Name} {
@@ -150,9 +155,21 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, "could not create account")
 			return
 		}
+		s.saveIdentity(info.Sub, info.Email, info.SlackID, info.Verification, info.YSWSEligible)
 	}
 	server := strings.TrimSuffix(strings.TrimSuffix(o.RedirectURL, "/auth/callback"), "/")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	tokenPage.Execute(w, map[string]string{"Handle": handle, "Server": server, "Token": apiTok})
+}
+
+// saveIdentity stores the Hack Club identity fields programs need for the Unified DB.
+// They are private: never shown on profiles, only in submissions to reviewers and webhooks.
+func (s *Server) saveIdentity(sub, email, slackID, verification string, eligible *bool) {
+	var el any
+	if eligible != nil {
+		el = *eligible
+	}
+	s.DB.Exec(`UPDATE users SET email = ?, slack_id = ?, verification_status = ?, ysws_eligible = ? WHERE oauth_sub = ?`,
+		email, slackID, verification, el, sub)
 }

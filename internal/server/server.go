@@ -72,6 +72,9 @@ func Open(path string) (*Server, error) {
 		return nil, err
 	}
 	db.Exec(`ALTER TABLE users ADD COLUMN oauth_sub TEXT`) // migration; errors when already present
+	for _, c := range []string{"email TEXT", "slack_id TEXT", "verification_status TEXT", "ysws_eligible INTEGER"} {
+		db.Exec(`ALTER TABLE users ADD COLUMN ` + c)
+	}
 	for _, c := range []string{"prompts", "ai_lines", "human_edits", "hands_on", "steering", "watching"} {
 		db.Exec(`ALTER TABLE minutes ADD COLUMN ` + c + ` INTEGER NOT NULL DEFAULT 0`)
 	}
@@ -469,6 +472,9 @@ type UnifiedRecord struct {
 	ReviewURL      string   `json:"review_url"`
 	VerifiedHours  float64  `json:"verified_hours"`
 	VibetimeStatus string   `json:"status"`
+	// Airtable holds the same data under the Unified YSWS DB's own field names (as programs
+	// such as Flavortown write them), ready to send as-is.
+	Airtable map[string]any `json:"airtable"`
 }
 
 // DuplicatePromptMinLen: only distinctive prompts count toward cross-account duplicates.
@@ -507,6 +513,12 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 		q.Commits, q.GitErr = s.Git.Commits(in.Repo, in.From, in.To.Add(24*time.Hour))
 	}
 	res := verify.Verify(q)
+	// Hack Club Auth says whether the person can take part in YSWS programs (age, verification).
+	var eligible sql.NullBool
+	s.DB.QueryRow(`SELECT ysws_eligible FROM users WHERE id = ?`, u.ID).Scan(&eligible)
+	if eligible.Valid && !eligible.Bool {
+		res.Flags = append(res.Flags, verify.Flag{Code: "not_ysws_eligible", Weight: 0, Detail: "Hack Club Auth reports this account is not YSWS eligible"})
+	}
 
 	// D3: the same distinctive prompts submitted from another account.
 	var shas []string
@@ -573,7 +585,7 @@ func (s *Server) loadSubmission(id int64, withBundle bool) (Submission, int64) {
 		sub.ApprovedSeconds = &approved.Int64
 	}
 	json.Unmarshal([]byte(resJSON), &sub.Result)
-	sub.Unified = s.unified(sub)
+	sub.Unified = s.unified(sub, uid)
 	if withBundle {
 		json.Unmarshal([]byte(bundle), &sub.Links)
 	}
@@ -680,7 +692,7 @@ func (s *Server) notify(sub Submission) {
 func (s *Server) dbPath() string { return s.path }
 
 // PublicURL is used to build review links in exported records.
-func (s *Server) unified(sub Submission) UnifiedRecord {
+func (s *Server) unified(sub Submission, uid int64) UnifiedRecord {
 	rec := UnifiedRecord{VerifiedHours: round2(float64(sub.VerifiedSeconds) / 3600), VibetimeStatus: sub.Status,
 		ReviewURL: s.PublicURL + fmt.Sprintf("/review#%d", sub.ID)}
 	if sub.Repo != "" {
@@ -702,6 +714,19 @@ func (s *Server) unified(sub Submission) UnifiedRecord {
 		if sub.Note != "" {
 			rec.Justification += "; reviewer: " + sub.Note
 		}
+	}
+	var email, slack sql.NullString
+	s.DB.QueryRow(`SELECT email, slack_id FROM users WHERE id = ?`, uid).Scan(&email, &slack)
+	rec.Airtable = map[string]any{"Code URL": rec.CodeURL}
+	if email.String != "" {
+		rec.Airtable["Email"] = email.String
+	}
+	if slack.String != "" {
+		rec.Airtable["slack_id"] = slack.String
+	}
+	if rec.HoursSpent != nil {
+		rec.Airtable["Optional - Override Hours Spent"] = *rec.HoursSpent
+		rec.Airtable["Optional - Override Hours Spent Justification"] = rec.Justification + " (" + rec.ReviewURL + ")"
 	}
 	return rec
 }

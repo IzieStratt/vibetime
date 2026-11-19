@@ -129,3 +129,23 @@ func FuzzEvents(f *testing.F) {
 		}
 	})
 }
+
+// wakatime-cli >= 2.2x sends "ai coding" heartbeats parsed from AI transcripts; they are
+// agent activity and must not earn attended time.
+func TestWakaTimeAICodingIsNotHuman(t *testing.T) {
+	ts := srv(t)
+	base := float64(now.Add(-10 * time.Minute).Unix())
+	var hbs []string
+	for i := 0; i < 5; i++ {
+		hbs = append(hbs, fmt.Sprintf(`{"time":%f,"project":"site","category":"ai coding","ai_line_changes":12}`, base+float64(i*30)))
+	}
+	post(t, ts.URL+"/api/v1/users/current/heartbeats.bulk", "["+strings.Join(hbs, ",")+"]")
+	if m := summary(t, ts.URL); m["total_seconds"].(float64) != 0 {
+		t.Fatalf("AI heartbeats earned time: %v", m)
+	}
+	// a human coding heartbeat right after still counts normally
+	post(t, ts.URL+"/api/v1/users/current/heartbeats.bulk", fmt.Sprintf(`[{"time":%f,"project":"site","category":"coding"},{"time":%f,"project":"site"}]`, base+200, base+260))
+	if m := summary(t, ts.URL); m["total_seconds"].(float64) != 60 {
+		t.Fatalf("%v", m)
+	}
+}
