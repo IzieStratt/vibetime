@@ -37,3 +37,24 @@ func TestIsHumanActivity(t *testing.T) {
 		t.Error("human edit")
 	}
 }
+
+func TestPromptHelpers(t *testing.T) {
+	e := Event{Kind: Prompt, PromptText: "héllo"}
+	if e.PromptLength() != 5 || !e.LowEffort() {
+		t.Fatal("len/low")
+	}
+	r := e.Redacted()
+	if r.PromptText != "" || r.PromptLen != 5 || r.PromptLength() != 5 || !r.LowEffort() || r.Redacted() != r {
+		t.Fatalf("%+v", r)
+	}
+	if (Event{Kind: Prompt}).LowEffort() {
+		t.Fatal("unknown length is not low effort")
+	}
+	if (Event{Kind: Edit, PromptText: "x"}).LowEffort() {
+		t.Fatal("non-prompt")
+	}
+	long := Event{Kind: Prompt, PromptText: "this prompt is definitely long enough"}
+	if long.LowEffort() {
+		t.Fatal("long")
+	}
+}

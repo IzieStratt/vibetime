@@ -1,5 +1,5 @@
 // Package chain implements the tamper-evident hash chain over local events.
-// hash_n = sha256(hash_{n-1} || canonical JSON of event_n). The head is periodically
+// hash_n = sha256(hash_{n-1} || JSON of event_n with prompt text replaced by its sha256). The head is periodically
 // committed to the server so history cannot be rewritten or backfilled later.
 package chain
 
@@ -17,7 +17,7 @@ var Genesis = hex.EncodeToString(make([]byte, sha256.Size))
 
 // Next returns the chain hash after appending e to prev.
 func Next(prev string, e event.Event) (string, error) {
-	b, err := json.Marshal(e)
+	b, err := json.Marshal(e.Redacted())
 	if err != nil {
 		return "", err
 	}

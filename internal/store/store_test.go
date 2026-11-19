@@ -69,3 +69,28 @@ func TestDBTamperDetected(t *testing.T) {
 		t.Fatalf("expected tamper at 1, got %d", i)
 	}
 }
+
+func TestCountAndLinksFrom(t *testing.T) {
+	s, _ := open(t)
+	defer s.Close()
+	for i := 0; i < 5; i++ {
+		s.Append(event.Event{Time: time.Unix(int64(i*60), 0), Kind: event.Heartbeat, Project: "p"})
+	}
+	if n, _ := s.Count(); n != 5 {
+		t.Fatal(n)
+	}
+	all, _ := s.Links()
+	prev, links, _ := s.LinksFrom(time.Unix(120, 0))
+	if prev != all[1].Hash || len(links) != 3 {
+		t.Fatal(len(links))
+	}
+	if i, _ := chain.Verify(prev, links); i != -1 {
+		t.Fatal("slice must verify from prev")
+	}
+	if prev, links, _ := s.LinksFrom(time.Unix(0, 0)); prev != chain.Genesis || len(links) != 5 {
+		t.Fatal("from start")
+	}
+	if _, links, _ := s.LinksFrom(time.Unix(9999, 0)); links != nil {
+		t.Fatal("after end")
+	}
+}

@@ -7,11 +7,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/IzieStratt/vibetime/internal/event"
+	"github.com/IzieStratt/vibetime/internal/server"
+	"github.com/IzieStratt/vibetime/internal/store"
 )
 
 func freeAddr(t *testing.T) string {
@@ -116,5 +121,57 @@ func TestServePortInUse(t *testing.T) {
 	var b bytes.Buffer
 	if Run([]string{"serve", "-addr", l.Addr().String(), "-db", filepath.Join(t.TempDir(), "x.db")}, nil, &b) != 1 {
 		t.Fatal("expected failure when port busy")
+	}
+}
+
+func TestLoginSubmitCLI(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("VIBETIME_HOME", home)
+	srv, err := server.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.OpenSignup = true
+	ts := httptest.NewServer(srv.Handler())
+	defer func() { ts.Close(); srv.Close() }()
+	var b bytes.Buffer
+	for _, bad := range [][]string{{"login"}, {"login", "-server", ts.URL}, {"login", "-server", ts.URL, "-handle", "a", "-token", "b"}} {
+		if Run(bad, nil, &b) != 2 {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+	if Run([]string{"submit", "-project", "p", "-from", "2026-01-01T00:00:00Z"}, nil, &b) != 1 {
+		t.Fatal("submit before login")
+	}
+	if Run([]string{"login", "-server", "http://127.0.0.1:1", "-handle", "rowan"}, nil, &b) != 1 {
+		t.Fatal("unreachable server")
+	}
+	if Run([]string{"login", "-server", ts.URL, "-handle", "rowan"}, nil, &b) != 0 {
+		t.Fatal(b.String())
+	}
+	if Run([]string{"submit"}, nil, &b) != 2 || Run([]string{"submit", "-project", "p", "-from", "yesterday"}, nil, &b) != 2 {
+		t.Fatal("submit usage")
+	}
+	// a real store with a few events, submitted for review
+	st, _ := store.Open(filepath.Join(home, "events.db"))
+	now := time.Now().UTC().Truncate(time.Second)
+	st.Append(event.Event{Time: now.Add(-3 * time.Minute), Kind: event.Prompt, Project: "cs2", PromptText: "hello there"})
+	st.Append(event.Event{Time: now.Add(-2 * time.Minute), Kind: event.Heartbeat, Project: "cs2"})
+	st.Close()
+	b.Reset()
+	if Run([]string{"submit", "-project", "cs2", "-repo", "https://github.com/rowan/cs2.git", "-from", now.Add(-time.Hour).Format(time.RFC3339)}, nil, &b) != 0 {
+		t.Fatal(b.String())
+	}
+	if !strings.Contains(b.String(), "submission 1") || !strings.Contains(b.String(), "unanchored") {
+		t.Fatalf("expected an unanchored (never synced) submission: %s", b.String())
+	}
+	if Run([]string{"submit", "-project", "nope", "-from", now.Add(time.Hour).Format(time.RFC3339)}, nil, &b) != 1 {
+		t.Fatal("empty window")
+	}
+	if Run([]string{"login", "-server", ts.URL, "-token", "vt_x"}, nil, &b) != 0 {
+		t.Fatal("token login")
+	}
+	if Run([]string{"submit", "-project", "p", "-from", now.Format(time.RFC3339), "-db", filepath.Join(home, "missing", "x", "y.db")}, nil, &b) != 1 {
+		t.Fatal("bad db")
 	}
 }

@@ -112,3 +112,27 @@ func (s *Store) Range(from, to time.Time) ([]event.Event, error) {
 
 // DB exposes the handle for tests.
 func (s *Store) DB() *sql.DB { return s.db }
+
+// Count returns the number of events in the chain.
+func (s *Store) Count() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n)
+	return n, err
+}
+
+// LinksFrom returns the chain hash preceding the first event at or after t, and every
+// link from there to the end of the chain (in chain order).
+func (s *Store) LinksFrom(t time.Time) (string, []chain.Link, error) {
+	all, err := s.Links()
+	if err != nil {
+		return "", nil, err
+	}
+	prev := chain.Genesis
+	for i, l := range all {
+		if !l.Event.Time.Before(t) {
+			return prev, all[i:], nil
+		}
+		prev = l.Hash
+	}
+	return prev, nil, nil
+}

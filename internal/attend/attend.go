@@ -17,12 +17,42 @@ import (
 type Config struct {
 	Timeout  time.Duration
 	WatchCap time.Duration
+	// LowEffortCap replaces WatchCap after consecutive low-effort prompts ("continue"
+	// repeats): the first one keeps the full allowance, repeats earn only this much.
+	LowEffortCap time.Duration
 }
 
-var Default = Config{Timeout: 2 * time.Minute, WatchCap: 5 * time.Minute}
+var Default = Config{Timeout: 2 * time.Minute, WatchCap: 5 * time.Minute, LowEffortCap: time.Minute}
 
 // Compute returns attended duration per project.
 func Compute(events []event.Event, cfg Config) map[string]time.Duration {
+	out := map[string]time.Duration{}
+	spans(events, cfg, func(p string, from, to time.Time) { out[p] += to.Sub(from) })
+	return out
+}
+
+// Minutes returns attended time per project per UTC minute (keyed by minute start, unix seconds).
+func Minutes(events []event.Event, cfg Config) map[string]map[int64]time.Duration {
+	out := map[string]map[int64]time.Duration{}
+	spans(events, cfg, func(p string, from, to time.Time) {
+		if out[p] == nil {
+			out[p] = map[int64]time.Duration{}
+		}
+		for from.Before(to) {
+			m := from.Truncate(time.Minute)
+			end := m.Add(time.Minute)
+			if end.After(to) {
+				end = to
+			}
+			out[p][m.Unix()] += end.Sub(from)
+			from = end
+		}
+	})
+	return out
+}
+
+// spans calls emit for every credited interval.
+func spans(events []event.Event, cfg Config, emit func(project string, from, to time.Time)) {
 	var tl []event.Event
 	for _, e := range events {
 		if e.IsHumanActivity() || e.Kind == event.Idle {
@@ -31,7 +61,7 @@ func Compute(events []event.Event, cfg Config) map[string]time.Duration {
 	}
 	sort.SliceStable(tl, func(i, j int) bool { return tl[i].Time.Before(tl[j].Time) })
 
-	out := map[string]time.Duration{}
+	prevLow := false
 	for i := 0; i+1 < len(tl); i++ {
 		cur, next := tl[i], tl[i+1]
 		if cur.Kind == event.Idle {
@@ -40,12 +70,16 @@ func Compute(events []event.Event, cfg Config) map[string]time.Duration {
 		limit := cfg.Timeout
 		if cur.Kind == event.Prompt {
 			limit = cfg.WatchCap
+			low := cur.LowEffort()
+			if low && prevLow && cfg.LowEffortCap > 0 {
+				limit = cfg.LowEffortCap
+			}
+			prevLow = low
 		}
 		if gap := next.Time.Sub(cur.Time); gap > 0 && gap <= limit {
-			out[cur.Project] += gap
+			emit(cur.Project, cur.Time, next.Time)
 		}
 	}
-	return out
 }
 
 // Total sums all projects.
