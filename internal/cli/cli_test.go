@@ -296,6 +296,17 @@ func TestEditorHookContracts(t *testing.T) {
 			t.Fatalf("%s hook exit: %s", c.vendor, errb.String())
 		}
 	}
+	// The hook client has a short timeout so it never blocks the harness; a slow send spools
+	// instead. Drain any spool with an ignored event (it still flushes), as the next real hook
+	// would, so every event reaches the recorder.
+	spool := filepath.Join(home, "spool.jsonl")
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(spool); os.IsNotExist(err) {
+			break
+		}
+		Run([]string{"hook", "cursor"}, strings.NewReader(`{"hook_event_name":"beforeReadFile","workspace_roots":["`+cwd+`"]}`), &bytes.Buffer{})
+		time.Sleep(50 * time.Millisecond)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	for _, v := range []string{"cursor", "copilot", "augment", "continue"} {
