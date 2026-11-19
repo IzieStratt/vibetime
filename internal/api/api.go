@@ -16,8 +16,9 @@ import (
 const maxBody = 1 << 20
 
 type Server struct {
-	Store *store.Store
-	Now   func() time.Time
+	Store   *store.Store
+	Now     func() time.Time
+	MaxSkew time.Duration // 0 = DefaultMaxSkew
 }
 
 func (s *Server) Handler() http.Handler {
@@ -28,7 +29,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/users/current/heartbeats.bulk", s.waka)
 	mux.HandleFunc("GET /v1/summary", s.summary)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
-	return mux
+	return guard(mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -44,12 +45,24 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i, e := range evs {
-		if _, err := s.Store.Append(e); err != nil {
+		if err := e.Validate(); err != nil {
 			writeJSON(w, 400, map[string]any{"error": err.Error(), "index": i})
 			return
 		}
 	}
-	writeJSON(w, 202, map[string]any{"accepted": len(evs), "head": s.Store.Head()})
+	accepted, stale := 0, 0
+	for _, e := range evs {
+		if !s.fresh(e) {
+			stale++
+			continue
+		}
+		if _, err := s.Store.Append(e); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		accepted++
+	}
+	writeJSON(w, 202, map[string]any{"accepted": accepted, "stale": stale, "head": s.Store.Head()})
 }
 
 type wakaHB struct {
@@ -90,6 +103,10 @@ func (s *Server) waka(w http.ResponseWriter, r *http.Request) {
 			Project:  h.Project,
 			Language: h.Language,
 			Harness:  "editor",
+		}
+		if !s.fresh(e) {
+			resp = append(resp, []any{map[string]string{"error": "stale timestamp"}, 400})
+			continue
 		}
 		if _, err := s.Store.Append(e); err != nil {
 			resp = append(resp, []any{map[string]string{"error": err.Error()}, 400})

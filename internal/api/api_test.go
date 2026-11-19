@@ -21,7 +21,7 @@ func srv(t *testing.T) *httptest.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	ts := httptest.NewServer((&Server{Store: s, Now: func() time.Time { return now }}).Handler())
+	ts := httptest.NewServer((&Server{Store: s, Now: func() time.Time { return now }, MaxSkew: time.Hour}).Handler())
 	t.Cleanup(ts.Close)
 	return ts
 }
