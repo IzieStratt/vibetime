@@ -39,7 +39,7 @@ func main() {
 		fmt.Println(tok)
 		return
 	}
-	s.OpenSignup, s.Webhook, s.AuditRate = *openSignup, *webhook, *audit
+	s.OpenSignup, s.Webhook, s.AuditRate, s.PublicURL = *openSignup, *webhook, *audit, *publicURL
 	if *oauthBase != "" {
 		s.OAuth = &server.OAuth{ClientID: os.Getenv("OAUTH_CLIENT_ID"), ClientSecret: os.Getenv("OAUTH_CLIENT_SECRET"),
 			AuthorizeURL: *oauthBase + "/oauth/authorize", TokenURL: *oauthBase + "/oauth/token", UserInfoURL: *oauthBase + "/oauth/userinfo",

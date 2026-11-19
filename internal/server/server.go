@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -39,6 +40,7 @@ type Server struct {
 	OpenSignup  bool
 	SyncWindow  time.Duration // how old a synced minute may be (anti-backfill)
 	OAuth       *OAuth        // nil disables provider login
+	PublicURL   string        // e.g. https://vibetime.hackclub.com
 	hub         hub
 	webhookWait sync.WaitGroup
 }
@@ -445,6 +447,18 @@ type Submission struct {
 	Result          verify.Result `json:"result"`
 	Note            string        `json:"note"`
 	Links           []chain.Link  `json:"links,omitempty"`
+	// Unified carries what a Unified Projects DB record needs (code URL, approved hours,
+	// justification, review link); programs map these keys onto their Airtable fields.
+	Unified UnifiedRecord `json:"unified"`
+}
+
+type UnifiedRecord struct {
+	CodeURL        string   `json:"code_url"`
+	HoursSpent     *float64 `json:"hours_spent"` // approved hours; null until reviewed
+	Justification  string   `json:"hours_justification"`
+	ReviewURL      string   `json:"review_url"`
+	VerifiedHours  float64  `json:"verified_hours"`
+	VibetimeStatus string   `json:"status"`
 }
 
 // DuplicatePromptMinLen: only distinctive prompts count toward cross-account duplicates.
@@ -549,6 +563,7 @@ func (s *Server) loadSubmission(id int64, withBundle bool) (Submission, int64) {
 		sub.ApprovedSeconds = &approved.Int64
 	}
 	json.Unmarshal([]byte(resJSON), &sub.Result)
+	sub.Unified = s.unified(sub)
 	if withBundle {
 		json.Unmarshal([]byte(bundle), &sub.Links)
 	}
@@ -653,3 +668,32 @@ func (s *Server) notify(sub Submission) {
 }
 
 func (s *Server) dbPath() string { return s.path }
+
+// PublicURL is used to build review links in exported records.
+func (s *Server) unified(sub Submission) UnifiedRecord {
+	rec := UnifiedRecord{VerifiedHours: round2(float64(sub.VerifiedSeconds) / 3600), VibetimeStatus: sub.Status,
+		ReviewURL: s.PublicURL + fmt.Sprintf("/review#%d", sub.ID)}
+	if sub.Repo != "" {
+		rec.CodeURL = "https://" + sub.Repo
+	}
+	if sub.ApprovedSeconds != nil {
+		h := round2(float64(*sub.ApprovedSeconds) / 3600)
+		rec.HoursSpent = &h
+		var flags []string
+		for _, f := range sub.Result.Flags {
+			if f.Weight > 0 {
+				flags = append(flags, f.Code)
+			}
+		}
+		rec.Justification = fmt.Sprintf("vibetime: %.2fh verified from live-anchored activity (%d events); status %s", rec.VerifiedHours, sub.Result.Anchored, sub.Status)
+		if len(flags) > 0 {
+			rec.Justification += "; flags: " + strings.Join(flags, ", ")
+		}
+		if sub.Note != "" {
+			rec.Justification += "; reviewer: " + sub.Note
+		}
+	}
+	return rec
+}
+
+func round2(f float64) float64 { return float64(int64(f*100+0.5)) / 100 }
