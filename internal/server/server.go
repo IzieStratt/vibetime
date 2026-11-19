@@ -29,6 +29,7 @@ type GitEvidence interface {
 }
 
 type Server struct {
+	path        string
 	DB          *sql.DB
 	Now         func() time.Time
 	Git         GitEvidence // nil disables git checks
@@ -37,6 +38,7 @@ type Server struct {
 	Webhook     string // POSTed on review status changes
 	OpenSignup  bool
 	SyncWindow  time.Duration // how old a synced minute may be (anti-backfill)
+	OAuth       *OAuth        // nil disables provider login
 	hub         hub
 	webhookWait sync.WaitGroup
 }
@@ -67,7 +69,9 @@ func Open(path string) (*Server, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
 	}
-	return &Server{DB: db, Now: time.Now, AuditRate: 0.05, SyncWindow: 15 * time.Minute, Rand: randFloat}, nil
+	db.Exec(`ALTER TABLE users ADD COLUMN oauth_sub TEXT`) // migration; errors when already present
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_oauth ON users(oauth_sub)`)
+	return &Server{path: path, DB: db, Now: time.Now, AuditRate: 0.05, SyncWindow: 15 * time.Minute, Rand: randFloat}, nil
 }
 
 func randFloat() float64 {
@@ -90,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/submissions/{id}/review", s.auth(s.review))
 	m.HandleFunc("GET /api/v1/review/queue", s.auth(s.queue))
 	m.HandleFunc("GET /u/{handle}", s.profile)
+	m.HandleFunc("GET /review", s.console)
+	m.HandleFunc("GET /auth/login", s.oauthStart)
+	m.HandleFunc("GET /auth/callback", s.oauthCallback)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	return m
 }
@@ -608,3 +615,5 @@ func (s *Server) notify(sub Submission) {
 		}
 	}()
 }
+
+func (s *Server) dbPath() string { return s.path }

@@ -175,3 +175,18 @@ func TestLoginSubmitCLI(t *testing.T) {
 		t.Fatal("bad db")
 	}
 }
+
+func TestServiceCLI(t *testing.T) {
+	si, su := svcInstall, svcUninstall
+	defer func() { svcInstall, svcUninstall = si, su }()
+	var calls []string
+	svcInstall = func() error { calls = append(calls, "i"); return nil }
+	svcUninstall = func() error { calls = append(calls, "u"); return fmt.Errorf("x") }
+	var b bytes.Buffer
+	if Run([]string{"service", "install"}, nil, &b) != 0 || Run([]string{"service", "uninstall"}, nil, &b) != 1 || Run([]string{"service"}, nil, &b) != 2 {
+		t.Fatal(b.String())
+	}
+	if strings.Join(calls, "") != "iu" {
+		t.Fatal(calls)
+	}
+}

@@ -450,3 +450,11 @@ func TestHubDropsWhenPending(t *testing.T) {
 	h.unsubscribe(1, ch)
 	h.publish(1)
 }
+
+func TestConsolePage(t *testing.T) {
+	e := newEnv(t)
+	c, b := e.call("GET", "/review", "", nil)
+	if c != 200 || !strings.Contains(string(b), "/api/v1/review/queue") {
+		t.Fatal(c)
+	}
+}
