@@ -75,6 +75,34 @@ func TestEventsRejectsBad(t *testing.T) {
 	}
 }
 
+func TestEventsSingleObjectHint(t *testing.T) {
+	ts := srv(t)
+	r := post(t, ts.URL+"/v1/events", `{"time":"2026-11-18T12:00:00Z","kind":"prompt","project":"p"}`)
+	if r.StatusCode != 400 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	defer r.Body.Close()
+	var m map[string]string
+	json.NewDecoder(r.Body).Decode(&m)
+	if !strings.Contains(m["error"], "array") {
+		t.Fatalf("expected an array hint, got %q", m["error"])
+	}
+}
+
+func TestWakaTimeProbes(t *testing.T) {
+	ts := srv(t)
+	for _, p := range []string{"/api/v1/users/current", "/api/v1/users/current/statusbar/today"} {
+		r, err := http.Get(ts.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != 200 {
+			t.Fatalf("%s: status %d", p, r.StatusCode)
+		}
+	}
+}
+
 func TestWakaTimeCompat(t *testing.T) {
 	ts := srv(t)
 	base := float64(now.Add(-10 * time.Minute).Unix())

@@ -4,7 +4,14 @@ Passive, privacy-friendly time tracking for building with AI. vibetime counts **
 
 ## Install (agent)
 
-Download the archive for your OS from Releases (Windows 32/64-bit and ARM, macOS, Linux deb/rpm/tar), then:
+Download the archive for your OS from Releases (Windows 32/64-bit and ARM, macOS, Linux deb/rpm/tar), or on Nix:
+
+```sh
+nix run github:IzieStratt/vibetime           # run once without installing
+nix profile install github:IzieStratt/vibetime   # install the agent + server
+```
+
+Then:
 
 ```sh
 vibetime login -server https://YOUR-SERVER -token vt_...   # token from YOUR-SERVER/auth/login
@@ -26,7 +33,7 @@ Then add the plugin for your harness:
 | Augment | merge `plugins/augment/settings.json` into `~/.augment/settings.json` — prompt-level |
 | Continue (CLI) | add `plugins/continue/hooks.json` to your Continue hooks — prompt-level |
 | Any editor (VS Code, Antigravity, Cursor, Windsurf, Zed, Vim/Neovim, JetBrains, Emacs, ...) | Install the editor's WakaTime plugin and set `api_url = http://127.0.0.1:47391/api/v1` in `~/.wakatime.cfg` (any `api_key`). Editor time counts as hands-on. WakaTime's own "ai coding" heartbeats are recorded as agent activity and earn no time |
-| Anything else | POST JSON events to `http://127.0.0.1:47391/v1/events` (schema: `internal/event`) |
+| Anything else | POST a JSON **array** of events to `http://127.0.0.1:47391/v1/events`, e.g. `[{"time":"...","kind":"prompt","project":"p"}]` (schema: `internal/event`) |
 
 Coming from Hackatime? `vibetime import-hackatime -key YOUR_HACKATIME_KEY` brings your history in, labeled unverified.
 
@@ -36,7 +43,7 @@ Submit a project for a YSWS program:
 vibetime submit -project cs2 -repo github.com/you/cs2 -from 2026-11-01T00:00:00Z
 ```
 
-Prompts stay on your machine. Only their hashes and lengths are uploaded, unless you pass `-include-prompts`.
+Prompts stay on your machine: only their hashes and lengths are uploaded, unless you pass `-include-prompts`. Note that the prompt text itself is stored in plaintext in the local `events.db` (only the hash goes into the chain), so treat that file as you would your shell history — it's private to your account, not encrypted at rest.
 
 See your own time, offline, anytime:
 

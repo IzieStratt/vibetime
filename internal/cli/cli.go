@@ -29,6 +29,23 @@ var Stdout io.Writer = os.Stdout
 
 const DefaultAddr = "127.0.0.1:47391"
 
+const usage = `vibetime - count attended (human-in-the-loop) AI coding time
+
+usage: vibetime <command> [flags]
+
+commands:
+  serve              run the local agent (loopback HTTP + presence watcher); default
+  hook <harness>     forward a harness hook payload (claude-code, codex, gemini-cli, ...)
+  status [-days N]   show today/total attended time, split hands-on/steering/watching
+  login              -server URL (-handle NAME | -token TOKEN)
+  submit             -project NAME -repo REPO -from RFC3339 [-to RFC3339] [-include-prompts]
+  import-hackatime   -key KEY [-since YYYY-MM-DD]
+  service            install | uninstall  (start vibetime at login)
+  version            print the version
+
+run "vibetime <command> -h" for a command's flags.
+`
+
 func dataDir() string {
 	if d := os.Getenv("VIBETIME_HOME"); d != "" {
 		return d
@@ -72,8 +89,11 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 	case "version":
 		fmt.Fprintln(stderr, "vibetime 0.1.0")
 		return 0
+	case "help", "-h", "--help":
+		fmt.Fprint(stderr, usage)
+		return 0
 	}
-	fmt.Fprintf(stderr, "usage: vibetime [serve|hook <harness>|status|login|submit|import-hackatime|service install|service uninstall|version]\n")
+	fmt.Fprint(stderr, usage)
 	return 2
 }
 
@@ -177,19 +197,29 @@ func login(args []string, stderr io.Writer) int {
 	}
 	var cfg syncer.Config
 	var err error
+	var who string
 	if *token != "" {
-		err = syncer.SaveConfig(dataDir(), syncer.Config{Server: *srv, Token: *token})
+		// Verify the token against the server before saving, so a bad token fails here
+		// rather than silently storing and only erroring later at sync (401)/submit.
+		if who, err = syncer.Verify(*srv, *token, nil); err == nil {
+			err = syncer.SaveConfig(dataDir(), syncer.Config{Server: *srv, Token: *token})
+		}
 		if err == nil {
 			cfg, err = syncer.LoadConfig(dataDir())
 		}
 	} else {
 		cfg, err = syncer.Login(dataDir(), *srv, *handle, nil)
+		who = *handle
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "login:", err)
 		return 1
 	}
-	fmt.Fprintf(stderr, "logged in to %s (device %s); restart `vibetime serve` to start syncing\n", cfg.Server, cfg.Device)
+	as := ""
+	if who != "" {
+		as = " as " + who
+	}
+	fmt.Fprintf(stderr, "logged in to %s%s (device %s); restart `vibetime serve` to start syncing\n", cfg.Server, as, cfg.Device)
 	return 0
 }
 

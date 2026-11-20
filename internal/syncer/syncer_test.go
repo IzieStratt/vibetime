@@ -201,3 +201,20 @@ func TestConfigAndLogin(t *testing.T) {
 		t.Fatal("unwritable dir")
 	}
 }
+
+func TestVerify(t *testing.T) {
+	_, srv, _, _ := setup(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	if _, err := Verify(ts.URL, "vt_nope", nil); err == nil {
+		t.Fatal("bogus token accepted")
+	}
+	tok, err := srv.CreateUser("wren", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := Verify(ts.URL, tok, nil)
+	if err != nil || h != "wren" {
+		t.Fatalf("verify real token: handle=%q err=%v", h, err)
+	}
+}
