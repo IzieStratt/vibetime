@@ -20,7 +20,7 @@
           # Maintained automatically by .github/workflows/nix.yml: on any change to the Go
           # dependencies the workflow rebuilds, reads the correct hash out of the build
           # failure, and commits the new value on the line tagged below. Keep the tag.
-          vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # vibetime:vendor-hash
+          vendorHash = "sha256-n+WU7qcF6NauBw9DFU4VG1fnDQ387+nibJ/uzApqehk="; # vibetime:vendor-hash
 
           # both the local agent and the server; pure Go SQLite, so no cgo.
           subPackages = [ "cmd/vibetime" "cmd/vibetime-server" ];
