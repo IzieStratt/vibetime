@@ -2,7 +2,6 @@ version: 2
 builds:
   - id: vibetime
     main: ./cmd/vibetime
-    binary: vibetime
     env: [CGO_ENABLED=0]
     flags: [-trimpath]
     ldflags: ["-s -w"]
@@ -33,4 +32,14 @@ nfpms:
     homepage: https://github.com/IzieStratt/vibetime
     description: Passive, privacy-friendly AI time tracking
     formats: [deb, rpm]
+homebrew_casks:
+  - name: vibetime
+    ids: [agent]           # the agent archive (contains the `vibetime` binary + plugins)
+    repository:
+      owner: IzieStratt
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://vs.izie.top/vibetime"
+    description: "Passive, privacy-friendly AI time tracking"
+
 checksum: { name_template: checksums.txt }
