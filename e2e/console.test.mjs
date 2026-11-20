@@ -33,8 +33,9 @@ before(async () => {
   const { createHash } = await import("node:crypto");
   for (let i = 0; i < 5; i++) {
     const ev = { time: new Date(now - (10 - i) * 60000).toISOString(), kind: "prompt", project: "cs2", prompt_text: "please make the bomb timer beep faster near the end " + i };
-    // mirror chain.Next: sha256(prev + JSON(redacted event))
-    const red = { time: ev.time, kind: ev.kind, project: ev.project, prompt_sha256: createHash("sha256").update(ev.prompt_text).digest("hex"), prompt_len: ev.prompt_text.length };
+    // mirror chain.Next: sha256(prev + JSON(redacted event)); field order matches the Go struct
+    const norm = ev.prompt_text.toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+    const red = { time: ev.time, kind: ev.kind, project: ev.project, prompt_sha256: createHash("sha256").update(ev.prompt_text).digest("hex"), prompt_len: [...ev.prompt_text].length, prompt_norm: createHash("sha256").update(norm).digest("hex") };
     prev = createHash("sha256").update(prev + JSON.stringify(red)).digest("hex");
     links.push({ event: ev, hash: prev });
   }
