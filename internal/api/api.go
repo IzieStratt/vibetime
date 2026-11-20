@@ -3,7 +3,10 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,6 +31,10 @@ func (s *Server) Handler() http.Handler {
 	// WakaTime-compatible endpoints so existing editor plugins work unchanged.
 	mux.HandleFunc("POST /api/v1/users/current/heartbeats", s.waka)
 	mux.HandleFunc("POST /api/v1/users/current/heartbeats.bulk", s.waka)
+	// Several editor plugins probe these on startup to check connectivity; without them the
+	// plugin shows a connection error even though heartbeats are being accepted.
+	mux.HandleFunc("GET /api/v1/users/current", s.wakaUser)
+	mux.HandleFunc("GET /api/v1/users/current/statusbar/today", s.wakaToday)
 	mux.HandleFunc("GET /v1/summary", s.summary)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	return guard(mux)
@@ -40,9 +47,20 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
-	var evs []event.Event
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&evs); err != nil {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	var evs []event.Event
+	if err := json.Unmarshal(raw, &evs); err != nil {
+		msg := err.Error()
+		// The endpoint takes a JSON array of events; a bare object is the common mistake,
+		// so say so instead of surfacing the raw Go unmarshal error.
+		if t := bytes.TrimLeft(raw, " \t\r\n"); len(t) > 0 && t[0] == '{' {
+			msg = "expected a JSON array of events, e.g. [{...}]; got a single object"
+		}
+		writeJSON(w, 400, map[string]string{"error": msg})
 		return
 	}
 	for i, e := range evs {
@@ -128,6 +146,31 @@ func (s *Server) waka(w http.ResponseWriter, r *http.Request) {
 		resp = append(resp, []any{map[string]any{"data": h}, 201})
 	}
 	writeJSON(w, 202, map[string]any{"responses": resp})
+}
+
+// wakaUser answers the WakaTime /users/current probe. The agent has no WakaTime account;
+// it returns a static identity so plugins treat the connection as healthy.
+func (s *Server) wakaUser(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, map[string]any{"data": map[string]any{"id": "vibetime", "username": "vibetime", "display_name": "vibetime"}})
+}
+
+// wakaToday answers the status-bar probe with today's attended time in WakaTime's shape.
+func (s *Server) wakaToday(w http.ResponseWriter, _ *http.Request) {
+	now := s.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	evs, err := s.Store.Range(start, now.Add(time.Second))
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	total := attend.Total(attend.Compute(evs, attend.Default))
+	secs := int64(total / time.Second)
+	writeJSON(w, 200, map[string]any{"data": map[string]any{
+		"grand_total": map[string]any{
+			"total_seconds": secs,
+			"text":          fmt.Sprintf("%dh %dm", secs/3600, (secs%3600)/60),
+		},
+	}})
 }
 
 // summary returns aggregate attended seconds per project for the last N hours (default 24).

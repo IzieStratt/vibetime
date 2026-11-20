@@ -176,6 +176,32 @@ func (s *Syncer) Submit(project, repo string, from, to time.Time, includePrompts
 	return out, err
 }
 
+// Verify checks a website-issued token against the server before it is saved, so a typo'd
+// or stale token fails at login time instead of silently storing and only erroring later at
+// sync (401) or submit. It returns the account handle the token belongs to.
+func Verify(serverURL, token string, httpc *http.Client) (string, error) {
+	if httpc == nil {
+		httpc = &http.Client{Timeout: 20 * time.Second}
+	}
+	req, _ := http.NewRequest("POST", serverURL+"/api/v1/me", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	r, err := httpc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer r.Body.Close()
+	var out struct{ Handle, Error string }
+	json.NewDecoder(r.Body).Decode(&out)
+	if r.StatusCode >= 300 {
+		if out.Error == "" {
+			out.Error = http.StatusText(r.StatusCode)
+		}
+		return "", fmt.Errorf("server rejected token (%d): %s", r.StatusCode, out.Error)
+	}
+	return out.Handle, nil
+}
+
 // Login creates an account (open-signup servers) and saves the config.
 func Login(dir, serverURL, handle string, httpc *http.Client) (Config, error) {
 	b, _ := json.Marshal(map[string]string{"handle": handle})

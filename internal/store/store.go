@@ -4,6 +4,9 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +22,14 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
+	// Create the parent directory if it is missing: otherwise a fresh install running
+	// `vibetime status` (its first command) before `serve` dies with SQLite error 14
+	// (unable to open database file). An in-memory DSN has no directory to make.
+	if dir := filepath.Dir(path); dir != "" && dir != "." && !strings.HasPrefix(path, ":memory:") && !strings.HasPrefix(path, "file::memory:") {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+	}
 	// WAL + busy_timeout lets a reader (e.g. `vibetime submit` or tests) coexist with the
 	// running agent's writer; without WAL, Windows file-locking blocks the second opener.
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")

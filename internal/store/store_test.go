@@ -18,6 +18,17 @@ func open(t *testing.T) (*Store, string) {
 	return s, p
 }
 
+func TestOpenCreatesMissingDir(t *testing.T) {
+	// A fresh install runs `vibetime status` (which opens the db) before `serve` ever
+	// makes the config dir; Open must create it rather than fail with SQLite error 14.
+	p := filepath.Join(t.TempDir(), "does", "not", "exist", "events.db")
+	s, err := Open(p)
+	if err != nil {
+		t.Fatalf("open in missing dir: %v", err)
+	}
+	s.Close()
+}
+
 func TestAppendVerifyReopen(t *testing.T) {
 	s, p := open(t)
 	t0 := time.Unix(1_800_000_000, 0)
