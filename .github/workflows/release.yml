@@ -1,7 +1,8 @@
 name: release
 on:
-  push:
-    tags: ["v*"]
+  # Until HOMEBREW_TAP_GITHUB_TOKEN is set (a PAT that can push to IzieStratt/homebrew-tap),
+  # releases are cut locally with goreleaser. Switch back to `push: tags: ["v*"]` once the secret exists.
+  workflow_dispatch: {}
 permissions: { contents: write }
 jobs:
   release:
