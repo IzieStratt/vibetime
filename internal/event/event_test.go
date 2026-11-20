@@ -58,3 +58,24 @@ func TestPromptHelpers(t *testing.T) {
 		t.Fatal("long")
 	}
 }
+
+func TestDuplicateKeyNormalizes(t *testing.T) {
+	a := Event{Kind: Prompt, PromptText: "Fix the  recoil\n PATTERN"}
+	b := Event{Kind: Prompt, PromptText: "fix the recoil pattern"} // reformatted copy
+	if a.Redacted().DuplicateKey() != b.Redacted().DuplicateKey() {
+		t.Fatal("whitespace/case reformatting dodged duplicate detection")
+	}
+	// genuinely different prompts differ
+	c := Event{Kind: Prompt, PromptText: "add a scoreboard"}
+	if a.Redacted().DuplicateKey() == c.Redacted().DuplicateKey() {
+		t.Fatal("distinct prompts collided")
+	}
+	// DuplicateKey works before redaction (from text) and matches the redacted key
+	if a.DuplicateKey() != a.Redacted().DuplicateKey() {
+		t.Fatal("pre/post redaction key mismatch")
+	}
+	// committed in the chain-visible redacted form
+	if a.Redacted().PromptNorm == "" {
+		t.Fatal("PromptNorm not committed")
+	}
+}

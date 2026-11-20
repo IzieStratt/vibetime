@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -43,6 +44,10 @@ type Event struct {
 	PromptSHA string `json:"prompt_sha256,omitempty"`
 	// PromptLen is the prompt length in characters (kept when text is redacted).
 	PromptLen int `json:"prompt_len,omitempty"`
+	// PromptNorm is sha256 of the normalized prompt (lowercased, whitespace-collapsed), committed
+	// to the chain. Cross-account duplicate detection uses it, so reformatting a copied prompt
+	// (whitespace/case) no longer dodges the check.
+	PromptNorm string `json:"prompt_norm,omitempty"`
 	// Repo is the normalized git remote (e.g. github.com/owner/name); binds time to a repo.
 	Repo string `json:"repo,omitempty"`
 }
@@ -75,15 +80,36 @@ func (e Event) IsHumanActivity() bool {
 	return false
 }
 
-// Redacted returns e with prompt text replaced by its hash.
+// Redacted returns e with prompt text replaced by its hashes.
 func (e Event) Redacted() Event {
 	if e.PromptText != "" {
 		sum := sha256.Sum256([]byte(e.PromptText))
+		norm := sha256.Sum256([]byte(normalizePrompt(e.PromptText)))
 		e.PromptLen = len([]rune(e.PromptText))
 		e.PromptSHA = hex.EncodeToString(sum[:])
+		e.PromptNorm = hex.EncodeToString(norm[:])
 		e.PromptText = ""
 	}
 	return e
+}
+
+// normalizePrompt lowercases and collapses all runs of whitespace to a single space, so
+// cosmetic reformatting of a copied prompt yields the same hash.
+func normalizePrompt(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
+}
+
+// DuplicateKey returns the hash used for cross-account duplicate detection, preferring the
+// committed normalized hash and falling back to computing it from text when present.
+func (e Event) DuplicateKey() string {
+	if e.PromptNorm != "" {
+		return e.PromptNorm
+	}
+	if e.PromptText != "" {
+		sum := sha256.Sum256([]byte(normalizePrompt(e.PromptText)))
+		return hex.EncodeToString(sum[:])
+	}
+	return e.PromptSHA
 }
 
 // PromptLength returns the prompt length whether or not the text was redacted.

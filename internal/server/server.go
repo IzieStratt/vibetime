@@ -549,8 +549,8 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 	var shas []string
 	for _, l := range in.Links {
 		e := l.Event.Redacted()
-		if e.Kind == event.Prompt && e.Project == in.Project && e.PromptSHA != "" && e.PromptLen >= DuplicatePromptMinLen {
-			shas = append(shas, e.PromptSHA)
+		if e.Kind == event.Prompt && e.Project == in.Project && e.DuplicateKey() != "" && e.PromptLen >= DuplicatePromptMinLen {
+			shas = append(shas, e.DuplicateKey())
 		}
 	}
 	dups := 0

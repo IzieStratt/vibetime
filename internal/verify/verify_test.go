@@ -18,6 +18,7 @@ const repo = "github.com/kid/cs2"
 // sim plays an agent: events are chained and the head is committed to the "server".
 type sim struct {
 	noPresence bool // a script posting events with nobody at the keyboard
+	noAutoRepo bool // don't backfill Repo (test repo_unattributed)
 	lastActive time.Time
 	live       bool // commit once a minute, as the real agent does
 	nextCommit time.Time
@@ -42,7 +43,7 @@ func (s *sim) add(e event.Event) {
 			s.nextCommit = s.nextCommit.Add(time.Minute)
 		}
 	}
-	if e.Repo == "" && e.Kind != event.Idle {
+	if !s.noAutoRepo && e.Repo == "" && e.Kind != event.Idle {
 		e.Repo = repo
 	}
 	h, _ := chain.Next(s.head, e)
@@ -184,7 +185,7 @@ func TestB2NoPresence(t *testing.T) {
 		n.commit(e.Time.Add(20 * time.Second))
 		_ = i
 	}
-	if r := Verify(req(n)); !has(r, "no_presence_signal") {
+	if r := Verify(req(n)); !has(r, "sparse_idle") {
 		t.Fatal(codes(r))
 	}
 }
@@ -202,7 +203,7 @@ func TestB3AgentDrivingAgent(t *testing.T) {
 		s.commit(min(m + 1.95))
 	}
 	r := Verify(req(s))
-	for _, c := range []string{"superhuman_typing", "robotic_cadence", "long_day", "no_presence_signal"} {
+	for _, c := range []string{"superhuman_typing", "robotic_cadence", "long_day", "sparse_idle"} {
 		if !has(r, c) {
 			t.Errorf("missing %s in %s", c, codes(r))
 		}
@@ -353,5 +354,51 @@ func TestSuperhumanTypingWithoutStops(t *testing.T) {
 	s.commit(min(m + 1))
 	if r := Verify(req(s)); !has(r, "superhuman_typing") {
 		t.Fatal(codes(r))
+	}
+}
+
+// Fraud #1: editor heartbeats + a jiggler (presence) but no prompts/edits must not pass clean.
+func TestHeartbeatOnlyFarming(t *testing.T) {
+	s := newSim()
+	s.live = true
+	for i := 0; i < 240; i++ { // 4h of heartbeats only; the sim adds Active presence per minute
+		s.add(event.Event{Time: min(float64(i)), Kind: event.Heartbeat, Project: "cs2"})
+	}
+	s.commit(min(240))
+	r := Verify(req(s))
+	if !has(r, "heartbeat_only") || !has(r, "sparse_idle") || r.Risk == 0 {
+		t.Fatalf("risk=%d codes=%s", r.Risk, codes(r))
+	}
+}
+
+// Fraud #1: a single fabricated idle can't clear many hours of claimed time.
+func TestSingleIdleDoesNotClear(t *testing.T) {
+	s := newSim()
+	s.live = true
+	for i := 0; i < 360; i++ {
+		s.add(event.Event{Time: min(float64(i)), Kind: event.Prompt, Project: "cs2", PromptText: fmt.Sprintf("step %d, adjust the spray and recoil", i)})
+		s.add(event.Event{Time: min(float64(i) + 0.3), Kind: event.Edit, Project: "cs2", Human: true, LinesAdded: 2})
+	}
+	s.add(event.Event{Time: min(100), Kind: event.Idle}) // one token break for 6h
+	s.commit(min(360))
+	if r := Verify(req(s)); !has(r, "sparse_idle") {
+		t.Fatalf("single idle cleared the check: %s", codes(r))
+	}
+}
+
+// Fraud #10: stripping the repo from events shouldn't dodge repo checks.
+func TestRepoUnattributed(t *testing.T) {
+	s := newSim()
+	s.live, s.noAutoRepo = true, true
+	m := 0.0
+	for i := 0; i < 20; i++ {
+		s.add(event.Event{Time: min(m), Kind: event.Prompt, Project: "cs2", PromptText: fmt.Sprintf("do task %d with specifics here", i)})
+		s.add(event.Event{Time: min(m + 0.5), Kind: event.Edit, Project: "cs2", Human: true, LinesAdded: 3})
+		s.add(event.Event{Time: min(m + 1), Kind: event.Heartbeat, Project: "cs2"})
+		m += 3
+	}
+	s.commit(min(m))
+	if r := Verify(req(s)); !has(r, "repo_unattributed") {
+		t.Fatalf("%s", codes(r))
 	}
 }

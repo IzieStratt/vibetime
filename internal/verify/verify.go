@@ -189,6 +189,7 @@ func behaviour(res *Result, proj, timeline []event.Event, q Request) {
 	sort.SliceStable(proj, func(i, j int) bool { return proj[i].Time.Before(proj[j].Time) })
 	var prompts []event.Event
 	output, lowEffort, redacted, humanWork, fast := 0, 0, 0, 0, 0
+	heartbeats, humanEdits := 0, 0
 	var lastStop time.Time
 	for i, e := range proj {
 		switch e.Kind {
@@ -221,9 +222,11 @@ func behaviour(res *Result, proj, timeline []event.Event, q Request) {
 			lastStop = e.Time
 		case event.Heartbeat:
 			humanWork++
+			heartbeats++
 		case event.Edit:
 			if e.Human {
 				humanWork++
+				humanEdits++
 			} else {
 				lastStop = e.Time
 			}
@@ -257,7 +260,9 @@ func behaviour(res *Result, proj, timeline []event.Event, q Request) {
 		res.flag("no_human_activity", 5, "no editor activity or hand edits, only prompts")
 	}
 
-	// B2/B3: presence. A real person goes idle; scripts and jigglers don't.
+	// B2/B3: presence. A real person goes idle through the day; a jiggler or bot does not, and
+	// a single fabricated idle must not clear hours of claimed time. Expect roughly one break per
+	// hour; flag when idle periods are far below that.
 	verifiedH := float64(secondsIn(proj, q)) / 3600
 	idles := 0
 	for _, e := range timeline {
@@ -265,8 +270,13 @@ func behaviour(res *Result, proj, timeline []event.Event, q Request) {
 			idles++
 		}
 	}
-	if verifiedH >= 3 && idles == 0 {
-		res.flag("no_presence_signal", 15, "%.1fh with no idle periods: presence detection missing or defeated", verifiedH)
+	if verifiedH >= 3 && float64(idles) < verifiedH/2 {
+		res.flag("sparse_idle", 20, "%.1fh attended but only %d idle breaks: presence missing or defeated (jiggler/bot)", verifiedH, idles)
+	}
+	// Editor-heartbeat farming: time that comes only from editor activity, with no prompts and no
+	// hand edits, is consistent with an idle editor kept awake by a jiggler.
+	if verifiedH >= 2 && len(prompts) == 0 && humanEdits == 0 && heartbeats > 0 {
+		res.flag("heartbeat_only", 25, "%.1fh from editor heartbeats alone, with no prompts or hand edits", verifiedH)
 	}
 	// B3: inhuman day length, over any sliding 24h window (calendar days can be straddled)
 	if start, d := busiest24h(attend.Minutes(proj, attend.Default)[q.Project]); d > 14*time.Hour {
@@ -304,11 +314,16 @@ func repoChecks(res *Result, proj []event.Event, q Request) {
 		res.flag("no_repo", 10, "submission has no repository")
 		return
 	}
-	other := 0
+	other, unattributed, haveRepo := 0, 0, 0
 	claimedLines := 0
 	for _, e := range proj {
-		if e.Repo != "" && e.Repo != q.Repo {
+		switch {
+		case e.Repo == q.Repo:
+			haveRepo++
+		case e.Repo != "":
 			other++
+		default:
+			unattributed++ // recorded with no git remote at all
 		}
 		if e.Kind == event.Edit {
 			claimedLines += e.LinesAdded + e.LinesRemoved
@@ -316,6 +331,11 @@ func repoChecks(res *Result, proj []event.Event, q Request) {
 	}
 	if other > 0 {
 		res.flag("repo_mismatch", 50, "%d events were recorded in a different repository", other)
+	}
+	// A submission claims a repo, but if most events carry no repo the work wasn't actually in it
+	// (events pick up the repo from the git remote; stripping it dodges repo_mismatch).
+	if total := haveRepo + other + unattributed; total >= 10 && haveRepo*2 < total {
+		res.flag("repo_unattributed", 25, "%d of %d events carry no repository; can't confirm the work was in %s", unattributed, total, q.Repo)
 	}
 	if q.GitErr != nil {
 		res.flag("git_unavailable", 5, "could not fetch git evidence: %v", q.GitErr)
