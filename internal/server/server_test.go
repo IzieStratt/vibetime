@@ -553,3 +553,43 @@ func TestLiveViewerCap(t *testing.T) {
 		t.Fatal("cap per profile")
 	}
 }
+
+// Review #6: two concurrent submits of the same window must not both get full credit.
+func TestConcurrentSubmitNoDoubleCredit(t *testing.T) {
+	e := newEnv(t)
+	tok := e.user("rowan")
+	a := e.agent(tok)
+	a.session("cs2", "")
+	// fire several submits of the identical bundle concurrently
+	type res struct{ verified int64 }
+	results := make(chan int64, 6)
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, b := e.call("POST", "/api/v1/submissions", tok, SubmitRequest{Device: dev, Project: "cs2", Repo: "github.com/kid/cs2",
+				From: t0, To: t0.Add(2 * time.Hour), Prev: chain.Genesis, Links: a.links})
+			if c == 201 {
+				var s Submission
+				json.Unmarshal(b, &s)
+				results <- s.VerifiedSeconds
+			} else {
+				results <- -1
+			}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var creditedTotal, nonzero int64
+	for v := range results {
+		if v > 0 {
+			creditedTotal += v
+			nonzero++
+		}
+	}
+	// exactly one submit should carry the verified time; the rest get 0 (already_credited)
+	if nonzero != 1 {
+		t.Fatalf("%d submits credited time, want 1 (total credited %d)", nonzero, creditedTotal)
+	}
+}

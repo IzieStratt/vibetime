@@ -212,3 +212,37 @@ func TestAlternatingRepeatsCapped(t *testing.T) {
 		t.Fatal("spaced short prompts penalized")
 	}
 }
+
+// Review #3: watch credit after a prompt ends when the agent stops, so firing a prompt
+// then re-prompting 4 min later (agent did 10s of work) earns ~10s, not the full 4 min.
+func TestWatchClipsAtStop(t *testing.T) {
+	m := time.Minute
+	evs := []event.Event{
+		{Time: t0, Kind: event.Prompt, Project: "a"},
+		{Time: t0.Add(10 * time.Second), Kind: event.Stop, Project: "a"}, // agent finishes fast
+		{Time: t0.Add(4 * m), Kind: event.Prompt, Project: "a"},          // human re-prompts 4 min later
+		{Time: t0.Add(4*m + 10*time.Second), Kind: event.Stop, Project: "a"},
+	}
+	got := Compute(evs, Default)["a"]
+	if got > 30*time.Second {
+		t.Fatalf("prompt-and-wait credited %v, want <=30s (agent stopped at 10s)", got)
+	}
+	// but a prompt you actually stayed for (next human event soon) still credits the gap
+	stayed := []event.Event{{Time: t0, Kind: event.Prompt, Project: "a"}, {Time: t0.Add(3 * m), Kind: event.Heartbeat, Project: "a"}}
+	if Compute(stayed, Default)["a"] != 3*m {
+		t.Fatalf("staying (next heartbeat 3m) should credit 3m, got %v", Compute(stayed, Default)["a"])
+	}
+	// presence (Active) alone proves you stayed watching even with no stop/next
+	present := []event.Event{{Time: t0, Kind: event.Prompt, Project: "a"}, {Time: t0.Add(90 * time.Second), Kind: event.Active}}
+	if Compute(present, Default)["a"] != 5*m {
+		t.Fatalf("presence through the window should credit the cap, got %v", Compute(present, Default)["a"])
+	}
+	// prompt at an unattended agent (no stop, no next human, no presence) earns nothing
+	un := []event.Event{{Time: t0, Kind: event.Prompt, Project: "a"}}
+	for i := 1; i <= 10; i++ {
+		un = append(un, event.Event{Time: t0.Add(time.Duration(i) * m), Kind: event.ToolCall, Project: "a"})
+	}
+	if Compute(un, Default)["a"] != 0 {
+		t.Fatalf("unattended agent should earn 0, got %v", Compute(un, Default)["a"])
+	}
+}

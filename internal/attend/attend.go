@@ -73,16 +73,36 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 		emitM(p, from, split, Steering)
 		emitM(p, split, to, Watching)
 	}
-	var tl, stops []event.Event
+	var tl, stops, actives []event.Event
 	for _, e := range events {
-		if e.IsHumanActivity() || e.Kind == event.Idle {
+		switch {
+		case e.IsHumanActivity() || e.Kind == event.Idle:
 			tl = append(tl, e)
-		} else if e.Kind == event.Stop {
+		case e.Kind == event.Stop:
 			stops = append(stops, e)
+		case e.Kind == event.Active:
+			actives = append(actives, e) // OS input: proof the human stayed at the keyboard
 		}
 	}
-	sort.SliceStable(stops, func(i, j int) bool { return stops[i].Time.Before(stops[j].Time) })
-	sort.SliceStable(tl, func(i, j int) bool { return tl[i].Time.Before(tl[j].Time) })
+	byTime := func(s []event.Event) { sort.SliceStable(s, func(i, j int) bool { return s[i].Time.Before(s[j].Time) }) }
+	byTime(tl)
+	byTime(stops)
+	byTime(actives)
+
+	// firstStopAfter: the first time the agent said it finished, for project, in (after, before].
+	firstStopAfter := func(after, before time.Time, project string) time.Time {
+		j := sort.Search(len(stops), func(k int) bool { return stops[k].Time.After(after) })
+		for ; j < len(stops) && !stops[j].Time.After(before); j++ {
+			if stops[j].Project == project {
+				return stops[j].Time
+			}
+		}
+		return time.Time{}
+	}
+	hasActive := func(after, before time.Time) bool {
+		j := sort.Search(len(actives), func(k int) bool { return actives[k].Time.After(after) })
+		return j < len(actives) && !actives[j].Time.After(before)
+	}
 
 	var lowTimes []time.Time
 	for i := 0; i < len(tl); i++ {
@@ -90,43 +110,50 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 		if cur.Kind == event.Idle {
 			continue
 		}
-		limit := cfg.Timeout
-		if cur.Kind == event.Prompt {
-			limit = cfg.WatchCap
-			// A short prompt ("continue", "go") keeps the full allowance only if no other short
-			// prompt happened in the previous LowEffortWindow, so alternating with a longer prompt
-			// doesn't reset it.
-			if cur.LowEffort() {
-				for len(lowTimes) > 0 && cur.Time.Sub(lowTimes[0]) > LowEffortWindow {
-					lowTimes = lowTimes[1:]
-				}
-				if len(lowTimes) > 0 && cfg.LowEffortCap > 0 {
-					limit = cfg.LowEffortCap
-				}
-				lowTimes = append(lowTimes, cur.Time)
-			}
-		}
+		var next time.Time
 		if i+1 < len(tl) {
-			if gap := tl[i+1].Time.Sub(cur.Time); gap > 0 && gap <= limit {
-				emit(cur.Project, cur.Time, tl[i+1].Time, cur.Kind)
-				continue
-			}
+			next = tl[i+1].Time
 		}
-		// The last prompt before a break: credit watching the agent until it stopped
-		// (within the allowance and before any idle or later activity).
-		if cur.Kind == event.Prompt {
-			end := cur.Time.Add(limit)
-			if i+1 < len(tl) && tl[i+1].Time.Before(end) {
-				end = tl[i+1].Time
-			}
-			// stops are sorted: jump to the first one after the prompt (no per-prompt full scan)
-			j := sort.Search(len(stops), func(k int) bool { return stops[k].Time.After(cur.Time) })
-			for ; j < len(stops) && !stops[j].Time.After(end); j++ {
-				if stops[j].Project == cur.Project {
-					emit(cur.Project, cur.Time, stops[j].Time, cur.Kind)
-					break
+		if cur.Kind != event.Prompt {
+			// hands-on (editor activity, hand edits): credit the gap to the next human event,
+			// bounded by Timeout.
+			if !next.IsZero() {
+				if gap := next.Sub(cur.Time); gap > 0 && gap <= cfg.Timeout {
+					emit(cur.Project, cur.Time, next, cur.Kind)
 				}
 			}
+			continue
+		}
+		// Prompt watch credit: it ends when the agent says it finished (Stop), when you
+		// re-engage (next human event), or at the cap — whichever is first. It counts only if
+		// there is evidence you actually stayed: a following human event within the window, the
+		// agent finishing while you waited, or recorded OS presence. Firing prompts at an idle or
+		// unattended agent earns nothing.
+		limit := cfg.WatchCap
+		if cur.LowEffort() {
+			for len(lowTimes) > 0 && cur.Time.Sub(lowTimes[0]) > LowEffortWindow {
+				lowTimes = lowTimes[1:]
+			}
+			if len(lowTimes) > 0 && cfg.LowEffortCap > 0 {
+				limit = cfg.LowEffortCap
+			}
+			lowTimes = append(lowTimes, cur.Time)
+		}
+		window := cur.Time.Add(limit)
+		within := func(t time.Time) bool { return !t.IsZero() && t.After(cur.Time) && !t.After(window) }
+		stop := firstStopAfter(cur.Time, window, cur.Project)
+		if !(within(next) || within(stop) || hasActive(cur.Time, window)) {
+			continue // prompted and left
+		}
+		end := window
+		if within(next) && next.Before(end) {
+			end = next
+		}
+		if within(stop) && stop.Before(end) {
+			end = stop
+		}
+		if end.After(cur.Time) {
+			emit(cur.Project, cur.Time, end, cur.Kind)
 		}
 	}
 }

@@ -536,13 +536,25 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 	var eligible sql.NullBool
 	s.DB.QueryRow(`SELECT ysws_eligible FROM users WHERE id = ?`, u.ID).Scan(&eligible)
 	if eligible.Valid && !eligible.Bool {
-		res.Flags = append(res.Flags, verify.Flag{Code: "not_ysws_eligible", Weight: 0, Detail: "Hack Club Auth reports this account is not YSWS eligible"})
+		// Block auto-approval: programs decide eligibility, but a flagged-ineligible account
+		// should never slip through unreviewed.
+		res.Flags = append(res.Flags, verify.Flag{Code: "not_ysws_eligible", Weight: 25, Detail: "Hack Club Auth reports this account is not YSWS eligible"})
+		res.Risk += 25
 	}
 
 
+	// Everything that reads credited and then writes submission + credited must be one
+	// transaction, or concurrent submits of the same window each see 0 already-credited.
+	tx, err := s.DB.Begin()
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	defer tx.Rollback()
+
 	// B4 / review #2: a user's minute can be credited once, across all devices and submissions
 	// (rejected submissions release their minutes).
-	if removed := s.dedupe(u.ID, &res); removed > 0 {
+	if removed := s.dedupe(tx, u.ID, &res); removed > 0 {
 		w := 0
 		if removed*10 > res.VerifiedSeconds+removed {
 			w = 20
@@ -565,7 +577,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 	if status == "auto_approved" {
 		approved = res.VerifiedSeconds
 	}
-	out, err := s.DB.Exec(`INSERT INTO submissions(user_id, device, project, repo, from_ts, to_ts, verified_seconds, approved_seconds, status, risk, result, bundle, created)
+	out, err := tx.Exec(`INSERT INTO submissions(user_id, device, project, repo, from_ts, to_ts, verified_seconds, approved_seconds, status, risk, result, bundle, created)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, u.ID, in.Device, in.Project, in.Repo, in.From.Unix(), in.To.Unix(), res.VerifiedSeconds, approved, status, res.Risk, string(resJSON), string(bundle), s.Now().Unix())
 	if err != nil {
 		fail(w, 500, err.Error())
@@ -574,8 +586,12 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 	id, _ := out.LastInsertId()
 	for m, sec := range res.Minutes {
 		if sec > 0 {
-			s.DB.Exec(`INSERT INTO credited(user_id, minute, seconds, submission_id) VALUES(?,?,?,?)`, u.ID, m, sec, id)
+			tx.Exec(`INSERT INTO credited(user_id, minute, seconds, submission_id) VALUES(?,?,?,?)`, u.ID, m, sec, id)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, 500, err.Error())
+		return
 	}
 	sub, _ := s.loadSubmission(id, false)
 	s.notify(sub)
@@ -745,9 +761,15 @@ func (s *Server) unified(sub Submission, uid int64) UnifiedRecord {
 
 func round2(f float64) float64 { return float64(int64(f*100+0.5)) / 100 }
 
+// querier is satisfied by both *sql.DB and *sql.Tx so dedupe can read inside a transaction.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // dedupe trims res.Minutes so no minute exceeds 60s across the user's live submissions,
-// updates VerifiedSeconds, and returns the seconds removed.
-func (s *Server) dedupe(uid int64, res *verify.Result) int64 {
+// updates VerifiedSeconds, and returns the seconds removed. It must read and the caller must
+// write the credited rows inside the same transaction, or two concurrent submits both see 0.
+func (s *Server) dedupe(q querier, uid int64, res *verify.Result) int64 {
 	if len(res.Minutes) == 0 {
 		return 0
 	}
@@ -755,7 +777,7 @@ func (s *Server) dedupe(uid int64, res *verify.Result) int64 {
 	for m := range res.Minutes {
 		lo, hi = min(lo, m), max(hi, m)
 	}
-	rows, err := s.DB.Query(`SELECT c.minute, SUM(c.seconds) FROM credited c JOIN submissions s ON s.id = c.submission_id
+	rows, err := q.Query(`SELECT c.minute, SUM(c.seconds) FROM credited c JOIN submissions s ON s.id = c.submission_id
 		WHERE c.user_id = ? AND c.minute BETWEEN ? AND ? AND s.status != 'rejected' GROUP BY c.minute`, uid, lo, hi)
 	if err != nil {
 		return 0

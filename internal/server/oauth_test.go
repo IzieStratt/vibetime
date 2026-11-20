@@ -160,8 +160,9 @@ func TestOAuthIdentityFlowsToUnifiedRecord(t *testing.T) {
 	if at["Email"] != "rowan@example.com" || at["slack_id"] != "U0ROWAN" || at["Code URL"] != "https://github.com/kid/cs2" {
 		t.Fatalf("%v", at)
 	}
-	if sub.Status != "auto_approved" || at["Optional - Override Hours Spent"] == nil || !strings.Contains(fmt.Sprint(sub.Result.Flags), "not_ysws_eligible") {
-		t.Fatalf("%s %v %v", sub.Status, at, sub.Result.Flags)
+	// Ineligible accounts must NOT auto-approve — they go to review with the flag.
+	if sub.Status != "needs_review" || sub.Risk < 25 || !strings.Contains(fmt.Sprint(sub.Result.Flags), "not_ysws_eligible") {
+		t.Fatalf("%s risk=%d %v", sub.Status, sub.Risk, sub.Result.Flags)
 	}
 	// private: identity never appears on the public profile or insights
 	for _, path := range []string{"/u/rowan", "/api/v1/users/rowan/insights", "/api/v1/users/rowan/stats"} {
