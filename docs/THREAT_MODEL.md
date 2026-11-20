@@ -67,3 +67,19 @@ Every row names the code that handles it and the test that attacks it. **Blocked
 ## What we accept
 
 A determined cheater who runs a bot in real time for 40 hours, writes coherent prompts, and ships a real project whose diffs match can probably get through. At that point they've spent the hours supervising real AI-assisted development of a shipped project, which is close to what the program wants anyway. The aim is to make cheating more work than the honest path, not impossible.
+
+## Adversarial review hardening (2026-11-20)
+
+A dedicated fraud review and a security review (both read-only, see git history) drove these changes.
+
+**Fixed:**
+- **Watch credit requires the agent, or you, to actually be there.** Previously every prompt-to-next-prompt gap under 5 min was credited in full, so a bot firing a prompt every 4 min earned ~60 min/h even if the agent stopped 10 s in. Now a prompt's watch time ends at the agent's `Stop`, at your next action, or at the cap — whichever is first — and counts **only** with evidence you stayed: a following human event in the window, the agent finishing while you waited, or recorded OS presence (`Active`). A prompt fired at an idle or unattended agent earns nothing. (`attend.modeSpans`, `TestWatchClipsAtStop`)
+- **Ineligible accounts never auto-approve.** `not_ysws_eligible` now carries weight, so a Hack-Club-Auth-ineligible account always goes to human review. (`server.go`, `TestOAuthIdentityFlowsToUnifiedRecord`)
+- **No double-credit under concurrency.** The dedupe read and the `credited`/`submissions` writes now run in one transaction, so N simultaneous submits of the same window can't each see "nothing credited yet". (`server.submit`, `TestConcurrentSubmitNoDoubleCredit`)
+- **Redaction that hides the evidence is flagged.** Prompt length is self-reported and unverifiable once text is redacted, so when prompts are the only evidence (no editor/hand-edit activity) heavy redaction now weighs toward review. Redaction with real work alongside it still costs nothing. (`verify.behaviour`)
+- **Durable-Object hardening** (see `vibetime.js`): sync/import array caps + commitment pruning; attention modes can't exceed the minute's real seconds (an inflated split is normalized down); import rejects impossible dates and integer-wrap; the private toggle drops live sockets; per-user socket cap; handle validation; profile JSON-escaping; bounded insights cache; DST-correct day bucketing.
+
+**Accepted trust boundaries (mitigated, not solvable on an untrusted client):**
+- **Presence can be forged.** A rebuilt agent can write its own `Active`/`Idle` events, and a mouse jiggler keeps the OS idle counter low. Presence raises the cost of faking "I was here"; it is not proof. The server-side anchor (live commitments + GitHub push times) and human review of flagged submissions are the real backstops. The honest position: an hour that survives all flags plus matches real pushed code is close to an hour of supervised AI work, which is most of what the program wants.
+- **Public DO profile stats are self-reported.** The phase-1 Durable Object has no submission/verify path, so `vs.izie.top/vibetime` numbers are motivational, capped per minute, and must never be treated as audited hours. Only the Go submission path produces reviewable hours.
+- **Cross-account duplicate detection is exact-hash** (evadable by a whitespace change) and **repo binding is skippable** when events carry no repo — both are flags for review, not blocks.

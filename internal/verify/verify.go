@@ -237,9 +237,15 @@ func behaviour(res *Result, proj, timeline []event.Event, q Request) {
 		res.flag("low_effort_prompts", 15, "%d of %d prompts are under %d characters", lowEffort, n, event.LowEffortPromptLen)
 	}
 	if n >= 4 && redacted*5 > n*4 {
-		// Informational only: redaction is the privacy default and must not cost anyone.
-		// Every other detector works on prompt length and hashes, so redaction hides nothing they need.
-		res.flag("heavy_redaction", 0, "%d of %d prompts redacted (reviewer may ask to see them)", redacted, n)
+		// Redaction is the privacy default, so on its own it costs nothing. But prompt length is
+		// self-reported and unverifiable once text is hidden, so when prompts are the only evidence
+		// (no editor or hand-edit activity) heavy redaction hides what earned the time: send it to
+		// a human, who can ask the submitter to reveal the prompts.
+		w := 0
+		if humanWork == 0 {
+			w = 15
+		}
+		res.flag("heavy_redaction", w, "%d of %d prompts redacted (reviewer may ask to see them)", redacted, n)
 	}
 	if fast >= 3 {
 		res.flag("superhuman_typing", 30, "%d prompts typed faster than 15 chars/s", fast)
