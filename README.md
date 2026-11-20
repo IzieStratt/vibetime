@@ -17,6 +17,7 @@ Then add the plugin for your harness:
 |---|---|
 | Claude Code | `claude --plugin-dir plugins/claude-code` (or install the plugin) |
 | OpenCode ≥ 2 | copy `plugins/opencode/vibetime.ts` to `~/.config/opencode/plugins/` |
+| Amp | copy `plugins/amp/vibetime.ts` to `~/.config/amp/plugins/` (or `<project>/.amp/plugins/`), then `plugins: reload` — all Amp hooks (session, prompt, tool, edit, stop) |
 | pi | copy `plugins/pi/vibetime.ts` to `~/.pi/agent/extensions/` — prompt-level (prompt, edit, stop) |
 | Codex CLI | add `plugins/codex/config.toml` to `~/.codex/config.toml` |
 | Gemini CLI | merge `plugins/gemini-cli/settings.json` into `~/.gemini/settings.json` |
