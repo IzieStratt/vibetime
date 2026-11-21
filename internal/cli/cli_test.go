@@ -178,10 +178,25 @@ func TestLoginSubmitCLI(t *testing.T) {
 	if Run([]string{"submit", "-project", "nope", "-from", now.Add(time.Hour).Format(time.RFC3339)}, nil, &b) != 1 {
 		t.Fatal("empty window")
 	}
-	if Run([]string{"login", "-server", ts.URL, "-token", "vt_x"}, nil, &b) != 0 {
-		t.Fatal("token login")
+	// token login verifies against the server: a bogus token is rejected here, not later at sync.
+	if Run([]string{"login", "-server", ts.URL, "-token", "vt_bogus"}, nil, &b) != 1 {
+		t.Fatal("bogus token should be rejected at login")
 	}
-	if Run([]string{"submit", "-project", "p", "-from", now.Format(time.RFC3339), "-db", filepath.Join(home, "missing", "x", "y.db")}, nil, &b) != 1 {
+	realTok, err := srv.CreateUser("quinn", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Reset()
+	if Run([]string{"login", "-server", ts.URL, "-token", realTok}, nil, &b) != 0 {
+		t.Fatal("token login", b.String())
+	}
+	if !strings.Contains(b.String(), "as quinn") {
+		t.Fatalf("expected handle in login output: %s", b.String())
+	}
+	// bad db: a path whose directory component is a regular file, so the mkdir in store.Open fails.
+	badFile := filepath.Join(home, "afile")
+	os.WriteFile(badFile, nil, 0o600)
+	if Run([]string{"submit", "-project", "p", "-from", now.Format(time.RFC3339), "-db", filepath.Join(badFile, "x", "y.db")}, nil, &b) != 1 {
 		t.Fatal("bad db")
 	}
 }
@@ -266,7 +281,9 @@ func TestStatusCLI(t *testing.T) {
 	if Run([]string{"status", "-days", "x"}, nil, &errb) != 2 {
 		t.Fatal("bad flag")
 	}
-	if Run([]string{"status", "-db", filepath.Join(home, "no", "x.db")}, nil, &errb) != 1 {
+	badFile := filepath.Join(home, "afile")
+	os.WriteFile(badFile, nil, 0o600)
+	if Run([]string{"status", "-db", filepath.Join(badFile, "x.db")}, nil, &errb) != 1 {
 		t.Fatal("bad db")
 	}
 }

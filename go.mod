@@ -1,6 +1,6 @@
 module github.com/IzieStratt/vibetime
 
-go 1.27.4
+go 1.27
 
 require modernc.org/sqlite v1.62.0
 

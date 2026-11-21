@@ -210,7 +210,8 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request, u user) {
 	if in.Public != nil {
 		s.DB.Exec(`UPDATE users SET public = ? WHERE id = ?`, *in.Public, u.ID)
 	}
-	writeJSON(w, 200, map[string]any{"ok": true})
+	// handle lets `vibetime login -token` confirm the token and show whose account it is.
+	writeJSON(w, 200, map[string]any{"ok": true, "handle": u.Handle})
 }
 
 func (s *Server) lookup(handle string) (user, bool) {
