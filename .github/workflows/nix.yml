@@ -1,0 +1,52 @@
+name: nix
+on:
+  push:
+    branches: [main, amp-plugin]
+    paths: ['go.mod', 'go.sum', 'flake.nix', 'flake.lock', '**/*.go', '.github/workflows/nix.yml']
+  pull_request:
+    paths: ['go.mod', 'go.sum', 'flake.nix', 'flake.lock', '**/*.go', '.github/workflows/nix.yml']
+  workflow_dispatch:
+
+# contents:write lets the build job commit a corrected vendorHash back to the branch.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Build (self-heal vendorHash)
+        id: build
+        run: |
+          set -uo pipefail
+          build() { nix build .#vibetime --no-link --print-build-logs 2>build.log; }
+          if build; then
+            echo "built cleanly"; exit 0
+          fi
+          cat build.log
+          # buildGoModule prints the real hash as "got: sha256-..." on a vendorHash mismatch.
+          got=$(grep -oE 'got:[[:space:]]+sha256-[A-Za-z0-9+/=]+' build.log | grep -oE 'sha256-[A-Za-z0-9+/=]+' | head -1)
+          if [ -z "$got" ]; then
+            echo "::error::nix build failed for a reason other than a vendorHash mismatch"
+            exit 1
+          fi
+          echo "updating vendorHash -> $got"
+          sed -i -E "s@\"sha256-[A-Za-z0-9+/=]+\"; # vibetime:vendor-hash@\"$got\"; # vibetime:vendor-hash@" flake.nix
+          # rebuild to confirm the new hash is correct before trusting it
+          build || { cat build.log; echo "::error::rebuild still failed after updating vendorHash"; exit 1; }
+          echo "patched=1" >> "$GITHUB_OUTPUT"
+
+      - name: Commit corrected vendorHash
+        if: github.event_name == 'push' && steps.build.outputs.patched == '1'
+        run: |
+          set -euo pipefail
+          git config user.name izie
+          git config user.email 238573415+IzieStratt@users.noreply.github.com
+          git add flake.nix
+          git commit -m "nix: update vendorHash" \
+            -m "Co-Authored-By: Claude Opus 4.8 <ai@izie.top>"
+          git push
