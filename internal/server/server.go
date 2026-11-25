@@ -568,6 +568,8 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 		res.Risk += 25
 	}
 
+	extra := s.extraFlags(u, in, &res)
+
 	// Everything that reads credited and then writes submission + credited must be one
 	// transaction, or concurrent submits of the same window each see 0 already-credited.
 	tx, err := s.DB.Begin()
@@ -614,6 +616,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 			tx.Exec(`INSERT INTO credited(user_id, minute, seconds, submission_id) VALUES(?,?,?,?)`, u.ID, m, sec, id)
 		}
 	}
+	s.recordExtra(tx, u.ID, id, extra)
 	if err := tx.Commit(); err != nil {
 		fail(w, 500, err.Error())
 		return
