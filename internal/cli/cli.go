@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ commands:
   exclude <folder>   never record activity inside this folder (-list, -remove <folder>)
   pause [DURATION]   stop recording for 30m, 1h, 2h or tomorrow (default 30m); resume ends it early
   resume             end a pause
+  retention [DAYS]   keep prompt text for DAYS days (default 14; 0 keeps it forever)
   forward            -url URL [-key KEY] | -off   also send WakaTime heartbeats to another endpoint
   service            install | uninstall  (start vibetime at login)
   version            print the version
@@ -97,6 +99,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 		return pause(args[1:], stderr)
 	case "resume":
 		return resume(stderr)
+	case "retention":
+		return retention(args[1:], stderr)
 	case "forward":
 		return forward(args[1:], stderr)
 	case "version":
@@ -145,18 +149,17 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	defer s.Close()
 	ctl := &control.Store{Dir: dataDir()}
-	// Presence carries no project, so it is gated by the most recent event's folder: presence
-	// while paused, or while working inside an excluded folder, is never stored.
+	// Presence carries no project, so it is gated (see presenceAllowed) before it is stored.
 	w := &presence.Watcher{Idle: presence.System, Threshold: 2 * time.Minute, Interval: 15 * time.Second, Now: time.Now,
 		Emit: func(e event.Event) {
-			if cfg, err := ctl.Load(); err == nil && (cfg.Paused(time.Now()) || cfg.Excludes(ctl.LastCwd())) {
-				return
+			if presenceAllowed(ctl, time.Now()) {
+				s.Append(e)
 			}
-			s.Append(e)
 		}}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go w.Run(ctx)
+	go scrubLoop(ctx, s, ctl, stderr)
 	if cfg, err := syncer.LoadConfig(dataDir()); err == nil && cfg.Server != "" {
 		sy := &syncer.Syncer{Store: s, Cfg: cfg, Now: time.Now}
 		go sy.Run(time.Minute, ctx.Done(), func(err error) { fmt.Fprintln(stderr, "sync:", err) })
@@ -175,6 +178,55 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		defer c()
 		srv.Shutdown(sc)
 		return 0
+	}
+}
+
+// changeHold is how long presence is withheld after an exclude or pause change.
+const changeHold = time.Minute
+
+// presenceAllowed reports whether a presence event may be stored now. Presence carries no folder,
+// so it is withheld while paused, while the latest event's folder is excluded, and for a minute
+// after an exclude or pause change (the latest folder may be stale then). An unreadable control
+// file also withholds it: presence is evidence, so when in doubt it is not recorded.
+func presenceAllowed(ctl *control.Store, now time.Time) bool {
+	cfg, err := ctl.Load()
+	if err != nil {
+		return false
+	}
+	return !cfg.Paused(now) && !cfg.Excludes(ctl.LastCwd()) && !cfg.ChangedWithin(now, changeHold)
+}
+
+// scrubLoop removes prompt text older than the configured retention at start and then hourly.
+// The chain keeps every hash and length, so verification is unaffected.
+func scrubLoop(ctx context.Context, s *store.Store, ctl *control.Store, stderr io.Writer) {
+	run := func() {
+		cfg, err := ctl.Load()
+		if err != nil {
+			fmt.Fprintln(stderr, "retention:", err)
+			return
+		}
+		days := cfg.Retention()
+		if days == 0 {
+			return
+		}
+		n, err := s.Scrub(time.Now().AddDate(0, 0, -days))
+		if err != nil {
+			fmt.Fprintln(stderr, "retention:", err)
+		}
+		if n > 0 {
+			fmt.Fprintf(stderr, "retention: removed prompt text from %d events older than %d days\n", n, days)
+		}
+	}
+	run()
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			run()
+		}
 	}
 }
 
@@ -278,6 +330,16 @@ func submit(args []string, stderr io.Writer) int {
 		return 1
 	}
 	defer s.Close()
+	if *prompts {
+		evs, err := s.Range(f, t)
+		if err != nil {
+			fmt.Fprintln(stderr, "submit:", err)
+			return 1
+		}
+		if lost := lostPrompts(evs, *project); lost > 0 {
+			fmt.Fprintf(stderr, "submit: warning: %d prompts in this window have no stored text (removed by retention, or never kept); those are uploaded as hashes and lengths only\n", lost)
+		}
+	}
 	sub, err := (&syncer.Syncer{Store: s, Cfg: cfg, Now: time.Now}).Submit(*project, hooks.NormalizeRepo(*repo), f, t, *prompts)
 	if err != nil {
 		fmt.Fprintln(stderr, "submit:", err)
@@ -288,6 +350,18 @@ func submit(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "  [%s] %s\n", fl.Code, fl.Detail)
 	}
 	return 0
+}
+
+// lostPrompts counts the project's prompts that were recorded with text but have none now
+// (scrubbed by retention). Such prompts can only be uploaded as hashes.
+func lostPrompts(evs []event.Event, project string) int {
+	n := 0
+	for _, e := range evs {
+		if e.Kind == event.Prompt && e.Project == project && e.PromptText == "" && e.PromptLen > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // svcInstall/svcUninstall are swapped in tests so they never touch the real machine.
@@ -420,6 +494,34 @@ func exclude(args []string, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stderr, "excluded %s: nothing inside it is recorded from now on\n", p)
+	return 0
+}
+
+func retention(args []string, stderr io.Writer) int {
+	ctl := &control.Store{Dir: dataDir()}
+	if len(args) == 0 {
+		cfg, err := ctl.Load()
+		if err != nil {
+			fmt.Fprintln(stderr, "retention:", err)
+			return 1
+		}
+		if cfg.Retention() == 0 {
+			fmt.Fprintln(Stdout, "prompt text is kept forever")
+		} else {
+			fmt.Fprintf(Stdout, "prompt text is kept for %d days, then removed from the local database (hashes stay)\n", cfg.Retention())
+		}
+		return 0
+	}
+	days, err := strconv.Atoi(args[0])
+	if len(args) != 1 || err != nil || days < 0 {
+		fmt.Fprintln(stderr, "usage: vibetime retention [DAYS]  (0 keeps prompt text forever)")
+		return 2
+	}
+	if err := ctl.SetRetention(days); err != nil {
+		fmt.Fprintln(stderr, "retention:", err)
+		return 2
+	}
+	fmt.Fprintln(stderr, "saved; the running agent applies it within the hour. Removed text cannot be restored")
 	return 0
 }
 

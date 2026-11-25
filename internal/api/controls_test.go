@@ -218,3 +218,25 @@ func TestCwdNeverReachesChainOrSummary(t *testing.T) {
 		t.Fatal("the relevance score itself should still be stored")
 	}
 }
+
+func TestPresenceGateSeesExcludedFolderAsLatest(t *testing.T) {
+	// The agent withholds presence when the latest event's folder is excluded. Events from an
+	// excluded folder are dropped, but the folder must still become the "latest" one, otherwise
+	// presence while working there would be recorded against the previous, open folder.
+	ts, _, ctl := controlled(t)
+	secret := t.TempDir()
+	if _, err := ctl.Exclude(secret); err != nil {
+		t.Fatal(err)
+	}
+	ts1 := now.Format(time.RFC3339)
+	body := fmt.Sprintf(`[
+		{"time":%q,"kind":"edit","project":"open","human":true,"lines_added":2,"cwd":"/elsewhere/open"},
+		{"time":%q,"kind":"prompt","project":"s","prompt_text":"inside the secret folder","cwd":%q}
+	]`, ts1, ts1, secret)
+	r := post(t, ts.URL+"/v1/events", body)
+	r.Body.Close()
+	cfg, _ := ctl.Load()
+	if ctl.LastCwd() != secret || !cfg.Excludes(ctl.LastCwd()) {
+		t.Fatalf("latest folder = %q, want the excluded %q", ctl.LastCwd(), secret)
+	}
+}

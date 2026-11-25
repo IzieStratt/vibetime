@@ -28,6 +28,28 @@ type Settings struct {
 	ForwardURL string `json:"forward_url,omitempty"`
 	// ForwardKey is sent as HTTP Basic auth (base64 of the key, WakaTime style) when set.
 	ForwardKey string `json:"forward_key,omitempty"`
+	// PromptRetentionDays: prompt text older than this is scrubbed from the local database (the
+	// chain keeps its hashes). nil means DefaultRetentionDays; 0 keeps prompts forever.
+	PromptRetentionDays *int `json:"prompt_retention_days,omitempty"`
+	// ChangedAt is when exclusions or a pause last changed. Presence is withheld for a minute
+	// after that, because a presence event carries no folder of its own.
+	ChangedAt time.Time `json:"changed_at,omitzero"`
+}
+
+// DefaultRetentionDays is how long prompt text is kept when the user has not chosen otherwise.
+const DefaultRetentionDays = 14
+
+// Retention returns the prompt retention in days (0 = keep forever).
+func (s Settings) Retention() int {
+	if s.PromptRetentionDays == nil {
+		return DefaultRetentionDays
+	}
+	return *s.PromptRetentionDays
+}
+
+// ChangedWithin reports whether exclusions or the pause changed less than d before now.
+func (s Settings) ChangedWithin(now time.Time, d time.Duration) bool {
+	return !s.ChangedAt.IsZero() && now.Sub(s.ChangedAt) < d
 }
 
 // Paused reports whether events are being dropped at now.
@@ -113,6 +135,7 @@ func (s *Store) Exclude(folder string) (string, error) {
 			}
 		}
 		c.Excluded = append(c.Excluded, p)
+		c.ChangedAt = time.Now()
 		return nil
 	})
 }
@@ -134,6 +157,9 @@ func (s *Store) Include(folder string) (bool, error) {
 			keep = append(keep, f)
 		}
 		c.Excluded = keep
+		if removed {
+			c.ChangedAt = time.Now()
+		}
 		return nil
 	})
 	return removed, err
@@ -141,12 +167,12 @@ func (s *Store) Include(folder string) (bool, error) {
 
 // Pause sets PausedUntil.
 func (s *Store) Pause(until time.Time) error {
-	return s.update(func(c *Settings) error { c.PausedUntil = until; return nil })
+	return s.update(func(c *Settings) error { c.PausedUntil, c.ChangedAt = until, time.Now(); return nil })
 }
 
 // Resume clears any pause.
 func (s *Store) Resume() error {
-	return s.update(func(c *Settings) error { c.PausedUntil = time.Time{}; return nil })
+	return s.update(func(c *Settings) error { c.PausedUntil, c.ChangedAt = time.Time{}, time.Now(); return nil })
 }
 
 // SetForward sets (or with an empty url, clears) the heartbeat forwarding target.
@@ -158,6 +184,14 @@ func (s *Store) SetForward(rawURL, key string) error {
 		}
 	}
 	return s.update(func(c *Settings) error { c.ForwardURL, c.ForwardKey = rawURL, key; return nil })
+}
+
+// SetRetention sets how many days of prompt text are kept (0 = forever).
+func (s *Store) SetRetention(days int) error {
+	if days < 0 {
+		return fmt.Errorf("retention must be 0 (keep forever) or a positive number of days, got %d", days)
+	}
+	return s.update(func(c *Settings) error { c.PromptRetentionDays = &days; return nil })
 }
 
 // NoteCwd records the cwd of the most recent event that carried one.

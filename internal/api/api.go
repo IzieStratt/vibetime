@@ -107,12 +107,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	accepted, stale, excluded := 0, 0, 0
 	for _, e := range evs {
+		// Note the folder before the exclusion check: presence is gated by the most recent folder
+		// the user was in, and that includes an excluded one, so presence there is withheld.
+		if s.Control != nil {
+			s.Control.NoteCwd(e.Cwd)
+		}
 		if cfg.Excludes(e.Cwd) {
 			excluded++
 			continue
-		}
-		if s.Control != nil {
-			s.Control.NoteCwd(e.Cwd)
 		}
 		// Plugins that post directly can't score relevance themselves: do it here from the
 		// working directory they sent, then drop it so it never reaches the chain.
