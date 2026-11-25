@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +67,8 @@ func TestKeyFileIsOwnerOnlyAndReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no unix mode bits (files report 0666); there the user-profile ACL applies.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("key mode %v, want 0600", info.Mode().Perm())
 	}
 	s2, err := Open(p)
