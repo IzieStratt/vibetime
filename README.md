@@ -92,7 +92,7 @@ Off by default. The copy is sent in the background with a 2-second timeout, so i
 
 ## How hours are made trustworthy
 
-The agent appends every event to a local hash chain and sends the chain head to the server every minute. A submission only counts events covered by heads the server received *at the time*, so history can't be backfilled or made up later. Submissions are also checked server-side and a human reviews anything suspicious.
+The agent appends every event to a local hash chain and sends the chain head to the server every minute. A submission only counts events covered by heads the server received *at the time*, so history can't be backfilled or made up later. Submissions are also checked server-side and a human reviews anything suspicious. The checks themselves are not published, so they can't be tuned against; a server without them approves nothing automatically.
 
 ## Substance caps (ideas from Tally)
 
