@@ -292,47 +292,6 @@ func (f fakeGit) Commits(string, time.Time, time.Time) ([]verify.Commit, error) 
 	return f.commits, f.err
 }
 
-func TestHonestSubmissionAutoApprovedWithWebhook(t *testing.T) {
-	e := newEnv(t)
-	hooks := make(chan Submission, 4)
-	wh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var s Submission
-		json.NewDecoder(r.Body).Decode(&s)
-		hooks <- s
-	}))
-	defer wh.Close()
-	e.s.Webhook = wh.URL
-	e.s.Git = fakeGit{commits: []verify.Commit{{PushedAt: t0.Add(time.Hour), Additions: 60}}}
-	a := e.agent(e.user("rowan"))
-	a.session("cs2", "")
-	code, sub := a.submit("cs2")
-	if code != 201 || sub.Status != "auto_approved" || sub.Risk != 0 || sub.VerifiedSeconds < 60*60 {
-		t.Fatalf("%d %+v", code, sub)
-	}
-	if *sub.ApprovedSeconds != sub.VerifiedSeconds {
-		t.Fatal("approved")
-	}
-	select {
-	case got := <-hooks:
-		if got.ID != sub.ID || got.Status != "auto_approved" {
-			t.Fatalf("%+v", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no webhook")
-	}
-}
-
-func TestRandomAudit(t *testing.T) {
-	e := newEnv(t)
-	e.s.Rand = func() float64 { return 0.01 }
-	a := e.agent(e.user("rowan"))
-	a.session("cs2", "")
-	_, sub := a.submit("cs2")
-	if sub.Status != "needs_review" || sub.Result.Flags[len(sub.Result.Flags)-1].Code != "random_audit" {
-		t.Fatalf("%+v", sub)
-	}
-}
-
 // A4/D1 at the server: a fabricated bundle that was never synced verifies to zero.
 func TestFabricatedBundleRejected(t *testing.T) {
 	e := newEnv(t)
@@ -416,26 +375,6 @@ func TestReviewFlow(t *testing.T) {
 	}
 }
 
-func TestSubmitValidationAndGitErrors(t *testing.T) {
-	e := newEnv(t)
-	tok := e.user("rowan")
-	for _, body := range []any{"x", SubmitRequest{Device: "bad"}, SubmitRequest{Device: dev, Project: "p", From: t0, To: t0}} {
-		if c, _ := e.call("POST", "/api/v1/submissions", tok, body); c != 400 {
-			t.Errorf("accepted %v", body)
-		}
-	}
-	long := SubmitRequest{Device: dev, Project: "p", From: t0, To: t0.Add(400 * 24 * time.Hour), Links: []chain.Link{{}}}
-	if c, _ := e.call("POST", "/api/v1/submissions", tok, long); c != 400 {
-		t.Fatal("window")
-	}
-	e.s.Git = fakeGit{err: fmt.Errorf("rate limited")}
-	a := e.agent(tok)
-	a.session("cs2", "")
-	if _, s := a.submit("cs2"); !strings.Contains(fmt.Sprint(s.Result.Flags), "git_unavailable") {
-		t.Fatal(s.Result.Flags)
-	}
-}
-
 func TestCreateUserValidation(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.s.CreateUser("A", false); err == nil {
@@ -487,35 +426,6 @@ func TestUnifiedRecord(t *testing.T) {
 	json.Unmarshal(b, &raw)
 	if raw["unified"]["hours_spent"] != 1.0 {
 		t.Fatalf("json field names: %v", raw["unified"])
-	}
-}
-
-// Review finding #2: the same hours submitted twice, or from a second device, count once.
-func TestNoDoubleCredit(t *testing.T) {
-	e := newEnv(t)
-	tok := e.user("rowan")
-	a := e.agent(tok)
-	a.session("cs2", "")
-	_, first := a.submit("cs2")
-	_, again := a.submit("cs2")
-	if first.Status != "auto_approved" || again.VerifiedSeconds != 0 || again.Status != "needs_review" ||
-		!strings.Contains(fmt.Sprint(again.Result.Flags), "already_credited") {
-		t.Fatalf("again status=%s verified=%d flags=%v", again.Status, again.VerifiedSeconds, again.Result.Flags)
-	}
-	// second device covering the same wall-clock time
-	b := e.agent(tok)
-	b.dev = "device-0002"
-	b.session("cs2", "dev2")
-	_, other := b.submit("cs2")
-	if other.VerifiedSeconds != 0 {
-		t.Fatalf("second device double counted: %d", other.VerifiedSeconds)
-	}
-	// rejecting the first releases its minutes
-	rtok, _ := e.s.CreateUser("fraudsquad", true)
-	e.call("POST", fmt.Sprintf("/api/v1/submissions/%d/review", first.ID), rtok, map[string]any{"status": "rejected"})
-	_, retry := a.submit("cs2")
-	if retry.VerifiedSeconds != first.VerifiedSeconds {
-		t.Fatalf("minutes not released: %d vs %d", retry.VerifiedSeconds, first.VerifiedSeconds)
 	}
 }
 

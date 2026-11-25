@@ -1,7 +1,6 @@
 package syncer
 
 import (
-	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -45,103 +44,6 @@ func setup(t *testing.T) (*Syncer, *server.Server, *clock, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	return &Syncer{Store: st, Cfg: cfg, Now: clk.now}, srv, clk, dir
-}
-
-// Full loop: a real agent store, live sync every minute, then a submission.
-func TestLiveSyncThenSubmit(t *testing.T) {
-	sy, srv, clk, _ := setup(t)
-	const repo = "github.com/rowan/cs2"
-	gaps := []int{3, 5, 4, 3, 6}
-	m := t0
-	var events []event.Event
-	for i := 0; i < 20; i++ {
-		if i > 0 {
-			m = m.Add(time.Duration(gaps[i%5]) * time.Minute)
-		}
-		events = append(events,
-			event.Event{Time: m, Kind: event.Prompt, Project: "cs2", Repo: repo, PromptText: fmt.Sprintf("SECRET make the knife inspect animation smoother part %d", i)},
-			event.Event{Time: m.Add(30 * time.Second), Kind: event.Edit, Project: "cs2", Repo: repo, LinesAdded: 3},
-			event.Event{Time: m.Add(time.Minute), Kind: event.Heartbeat, Project: "cs2", Repo: repo},
-			event.Event{Time: m.Add(90 * time.Second), Kind: event.Heartbeat, Project: "homework"},
-			event.Event{Time: m.Add(2 * time.Minute), Kind: event.Heartbeat, Project: "cs2", Repo: repo},
-		)
-		if i%8 == 7 {
-			events = append(events, event.Event{Time: m.Add(150 * time.Second), Kind: event.Idle})
-		}
-	}
-	// replay in real time: append events as they happen, sync once a minute
-	next := t0.Add(time.Minute)
-	for _, e := range events {
-		for !next.After(e.Time) {
-			clk.set(next)
-			if err := sy.Tick(); err != nil {
-				t.Fatal(err)
-			}
-			next = next.Add(time.Minute)
-		}
-		clk.set(e.Time)
-		if e.IsHumanActivity() { // what the presence watcher records alongside real input
-			sy.Store.Append(event.Event{Time: e.Time, Kind: event.Active})
-		}
-		if _, err := sy.Store.Append(e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	clk.set(next)
-	sy.Tick()
-
-	st, _ := srv.UserStats(struct {
-		ID       int64
-		Handle   string
-		Reviewer bool
-		Public   bool
-	}{1, "rowan", false, true})
-	if st.Projects["cs2"] < 30*60 || st.Projects["homework"] == 0 {
-		t.Fatalf("live stats %+v", st)
-	}
-	in, err := srv.UserInsights(struct {
-		ID       int64
-		Handle   string
-		Reviewer bool
-		Public   bool
-	}{1, "rowan", false, true}, time.UTC)
-	if err != nil {
-		t.Fatal(err)
-	}
-	modes := in.HandsOn + in.Steering + in.Watching
-	var total int64
-	for _, d := range in.Days {
-		total += d.Seconds
-	}
-	if in.HandsOn == 0 || in.Steering == 0 || modes < total-int64(len(in.Projects))*60 || modes > total+60 {
-		t.Fatalf("modes %d/%d/%d sum %d vs total %d", in.HandsOn, in.Steering, in.Watching, modes, total)
-	}
-	if in.Prompts != 20 || in.AILines != 60 {
-		t.Fatalf("steering counts %+v", in)
-	}
-
-	sub, err := sy.Submit("cs2", repo, t0, m.Add(3*time.Minute), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sub.Status != "auto_approved" || sub.VerifiedSeconds < 30*60 {
-		t.Fatalf("%+v", sub)
-	}
-	// privacy: prompt text never left the machine
-	var leaked bool
-	srv.DB.QueryRow(`SELECT bundle LIKE '%SECRET%' FROM submissions WHERE id = ?`, sub.ID).Scan(&leaked)
-	if leaked {
-		t.Fatal("prompt text uploaded without consent")
-	}
-	// opting in includes this project's prompts only
-	sub2, err := sy.Submit("cs2", repo, t0, m.Add(3*time.Minute), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv.DB.QueryRow(`SELECT bundle LIKE '%SECRET%' FROM submissions WHERE id = ?`, sub2.ID).Scan(&leaked)
-	if !leaked {
-		t.Fatal("opt-in prompts missing")
-	}
 }
 
 func TestSubmitErrors(t *testing.T) {

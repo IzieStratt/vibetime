@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/IzieStratt/vibetime/internal/chain"
-	"github.com/IzieStratt/vibetime/internal/event"
 	"github.com/IzieStratt/vibetime/internal/verify"
 	_ "modernc.org/sqlite"
 )
@@ -542,7 +541,6 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 		res.Flags = append(res.Flags, verify.Flag{Code: "not_ysws_eligible", Weight: 25, Detail: "Hack Club Auth reports this account is not YSWS eligible"})
 		res.Risk += 25
 	}
-
 
 	// Everything that reads credited and then writes submission + credited must be one
 	// transaction, or concurrent submits of the same window each see 0 already-credited.
