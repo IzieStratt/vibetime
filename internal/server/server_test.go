@@ -112,7 +112,7 @@ func (a *agent) sync(at time.Time, mins ...SyncMinute) map[string]int {
 // session runs an honest 90 minute session with live syncing.
 func (a *agent) session(project, salt string) {
 	m := t0
-	gaps := []int{3, 5, 4, 3, 6} // humans are irregular (fixed intervals are caught server-side)
+	gaps := []int{3, 5, 4, 3, 6} // humans are irregular (timing regularity is analysed server-side; fixed intervals)
 	for i := 0; i < 25; i++ {
 		if i > 0 {
 			m = m.Add(time.Duration(gaps[i%5]) * time.Minute)
