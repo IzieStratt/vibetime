@@ -142,6 +142,7 @@ type wakaHB struct {
 	IsWrite  bool    `json:"is_write"`
 	Lines    int     `json:"lines"`
 	Category string  `json:"category"`
+	Entity   string  `json:"entity"`
 	AILines  int     `json:"ai_line_changes"`
 }
 
@@ -163,23 +164,38 @@ func (s *Server) waka(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 202, map[string]any{"responses": []any{}, "paused": true})
 		return
 	}
-	if cfg.ForwardURL != "" {
-		// Forwarding is best effort and never on the local response path.
-		go forwardHeartbeats(cfg.ForwardURL, cfg.ForwardKey, append([]byte(nil), body...))
-	}
 	var hbs []wakaHB
-	if len(raw) > 0 && raw[0] == '[' {
-		if err := json.Unmarshal(raw, &hbs); err != nil {
+	var kept []json.RawMessage // heartbeats that survive exclusions, in the sender's own bytes
+	isArray := len(raw) > 0 && raw[0] == '['
+	var items []json.RawMessage
+	if isArray {
+		if err := json.Unmarshal(raw, &items); err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
 	} else {
-		var one wakaHB
-		if err := json.Unmarshal(raw, &one); err != nil {
+		items = []json.RawMessage{raw}
+	}
+	for _, it := range items {
+		var h wakaHB
+		if err := json.Unmarshal(it, &h); err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		hbs = []wakaHB{one}
+		// Excluded folders are dropped before anything is stored or forwarded.
+		if h.Entity != "" && cfg.Excludes(h.Entity) {
+			continue
+		}
+		hbs = append(hbs, h)
+		kept = append(kept, it)
+	}
+	if cfg.ForwardURL != "" && len(kept) > 0 {
+		// Forwarding is best effort and never on the local response path.
+		fwd := append([]byte(nil), body...)
+		if isArray && len(kept) != len(items) {
+			fwd, _ = json.Marshal(kept)
+		}
+		go forwardHeartbeats(cfg.ForwardURL, cfg.ForwardKey, fwd)
 	}
 	resp := make([]any, 0, len(hbs))
 	for _, h := range hbs {

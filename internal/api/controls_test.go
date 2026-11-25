@@ -240,3 +240,42 @@ func TestPresenceGateSeesExcludedFolderAsLatest(t *testing.T) {
 		t.Fatalf("latest folder = %q, want the excluded %q", ctl.LastCwd(), secret)
 	}
 }
+
+func TestExcludedHeartbeatsAreNeitherStoredNorForwarded(t *testing.T) {
+	ts, s, ctl := controlled(t)
+	hk, got := receiver(t, 0)
+	if err := ctl.SetForward(hk.URL+"/hb", ""); err != nil {
+		t.Fatal(err)
+	}
+	secret := t.TempDir()
+	if _, err := ctl.Exclude(secret); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`[{"time":%d,"project":"secret","entity":%q,"language":"Go"},{"time":%d,"project":"open","entity":"/work/open/a.go","language":"Go"}]`,
+		now.Unix(), secret+"/main.go", now.Unix())
+	r := post(t, ts.URL+"/api/v1/users/current/heartbeats", body)
+	r.Body.Close()
+	if r.StatusCode != 202 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	select {
+	case g := <-got:
+		if strings.Contains(g[0], "secret") || !strings.Contains(g[0], "open") {
+			t.Fatalf("forwarded body must hold only the non-excluded heartbeat, got %s", g[0])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("non-excluded heartbeat was not forwarded")
+	}
+	evs, _ := s.Range(now.Add(-time.Minute), now.Add(time.Minute))
+	if len(evs) != 1 || evs[0].Project != "open" {
+		t.Fatalf("stored %+v", evs)
+	}
+	// a batch made only of excluded heartbeats forwards nothing
+	only := fmt.Sprintf(`[{"time":%d,"project":"secret","entity":%q}]`, now.Unix(), secret+"/x.go")
+	post(t, ts.URL+"/api/v1/users/current/heartbeats", only).Body.Close()
+	select {
+	case g := <-got:
+		t.Fatalf("excluded-only batch leaked: %s", g[0])
+	case <-time.After(300 * time.Millisecond):
+	}
+}
