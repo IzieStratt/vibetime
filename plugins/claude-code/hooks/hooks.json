@@ -3,6 +3,7 @@
     "SessionStart":     [{ "hooks": [{ "type": "command", "command": "vibetime hook claude-code", "timeout": 5 }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "vibetime hook claude-code", "timeout": 5 }] }],
     "PostToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "vibetime hook claude-code", "timeout": 5 }] }],
+    "PostToolUseFailure": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "vibetime hook claude-code", "timeout": 5 }] }],
     "Stop":             [{ "hooks": [{ "type": "command", "command": "vibetime hook claude-code", "timeout": 5 }] }]
   }
 }

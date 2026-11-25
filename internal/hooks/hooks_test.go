@@ -216,3 +216,88 @@ func TestReply(t *testing.T) {
 		t.Fatal("reply")
 	}
 }
+
+func TestTestRunDetection(t *testing.T) {
+	pass := one(t, "claude-code", `{"hook_event_name":"PostToolUse","cwd":"/x/p","tool_name":"Bash","tool_input":{"command":"cd pkg && go  test ./... -race"}}`)
+	fail := one(t, "claude-code", `{"hook_event_name":"PostToolUseFailure","cwd":"/x/p","tool_name":"Bash","tool_input":{"command":"cd pkg && go test ./... -race"}}`)
+	if pass.Kind != event.TestRun || fail.Kind != event.TestRun {
+		t.Fatalf("%+v %+v", pass, fail)
+	}
+	if !*pass.Pass || *fail.Pass || pass.CmdHash == "" || pass.CmdHash != fail.CmdHash {
+		t.Fatalf("fail and pass of the same command must pair: %+v %+v", pass, fail)
+	}
+	if pass.CmdHash == "" || len(pass.CmdHash) != 12 {
+		t.Fatal(pass.CmdHash)
+	}
+	// non-test shell commands stay plain tool calls; a failing non-test command too
+	if one(t, "claude-code", `{"hook_event_name":"PostToolUse","cwd":"/x/p","tool_name":"Bash","tool_input":{"command":"ls -la"}}`).Kind != event.ToolCall {
+		t.Fatal("ls is not a test run")
+	}
+	if one(t, "claude-code", `{"hook_event_name":"PostToolUseFailure","cwd":"/x/p","tool_name":"Bash","tool_input":{"command":"rm nope"}}`).Kind != event.ToolCall {
+		t.Fatal("failed non-test command should be a tool call")
+	}
+	for _, c := range []string{"pytest -x", "npm test", "cargo test --all", "make test", "bun test", "echo go testing"} {
+		want := c != "echo go testing"
+		if got := testRunEvent(event.Event{}, c, true) != nil; got != want {
+			t.Errorf("%q: detected=%v want %v", c, got, want)
+		}
+	}
+	// the Gemini CLI shell tool
+	if g := one(t, "gemini-cli", `{"hook_event_name":"AfterTool","cwd":"/x/p","tool_name":"run_shell_command","tool_input":{"command":"pytest"}}`); g.Kind != event.TestRun {
+		t.Fatalf("%+v", g)
+	}
+}
+
+func TestPromptRelevance(t *testing.T) {
+	old := RelevanceFor
+	defer func() { RelevanceFor = old }()
+	RelevanceFor = func(cwd, prompt string) *int { r := 640; return &r }
+	e := one(t, "claude-code", `{"hook_event_name":"UserPromptSubmit","cwd":"/x/p","prompt":"fix the syncer retry loop please"}`)
+	if e.RelevancePM == nil || *e.RelevancePM != 640 {
+		t.Fatalf("%+v", e)
+	}
+	// real implementation: short prompts are unknown, a repo's own words score
+	RelevanceFor = old
+	if defaultRelevanceFor(t.TempDir(), "ok") != nil {
+		t.Fatal("short prompt should have no relevance")
+	}
+	dir := t.TempDir()
+	for _, c := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"}} {
+		if err := exec.Command("git", append([]string{"-C", dir}, c...)...).Run(); err != nil {
+			t.Skip("git unavailable")
+		}
+	}
+	os.WriteFile(filepath.Join(dir, "syncer.go"), []byte("func flushRetryQueue() {}"), 0o644)
+	exec.Command("git", "-C", dir, "add", ".").Run()
+	r := defaultRelevanceFor(dir, "fix the flushRetryQueue bug in syncer")
+	if r == nil || *r < 500 {
+		t.Fatalf("relevance %v", r)
+	}
+	if r := defaultRelevanceFor(dir, "write a poem about autumn leaves falling"); r == nil || *r > 150 {
+		t.Fatalf("unrelated prompt scored %v", r)
+	}
+}
+
+func TestTestRunAcrossHarnesses(t *testing.T) {
+	// Copilot / Continue / Augment: lowercase shell tool, outcome in tool_response
+	fail := one(t, "copilot", `{"hook_event_name":"PostToolUse","cwd":"/x/p","tool_name":"bash","tool_input":{"command":"pytest -q"},"tool_response":{"exit_code":1}}`)
+	pass := one(t, "copilot", `{"hook_event_name":"PostToolUse","cwd":"/x/p","tool_name":"bash","tool_input":{"command":"pytest -q"},"tool_response":{"exit_code":0}}`)
+	if fail.Kind != event.TestRun || *fail.Pass || pass.Kind != event.TestRun || !*pass.Pass || fail.CmdHash != pass.CmdHash {
+		t.Fatalf("%+v %+v", fail, pass)
+	}
+	if e := one(t, "claude-code", `{"hook_event_name":"PostToolUse","cwd":"/x/p","tool_name":"Bash","tool_input":{"command":"npm test"},"tool_response":{"interrupted":true}}`); *e.Pass {
+		t.Fatal("interrupted run is not a pass")
+	}
+	// Cursor afterShellExecution has the command at the top level
+	c := one(t, "cursor", `{"hook_event_name":"afterShellExecution","workspace_roots":["/x/p"],"command":"cargo test","output":"ok"}`)
+	if c.Kind != event.TestRun || !*c.Pass || c.Project != "p" {
+		t.Fatalf("%+v", c)
+	}
+	c = one(t, "augment", `{"hook_event_name":"PostToolUse","cwd":"/x/p","tool_name":"launch-process","tool_input":{"command":"go test ./..."},"exit_code":2}`)
+	if c.Kind != event.TestRun || *c.Pass {
+		t.Fatalf("%+v", c)
+	}
+	if e := one(t, "cursor", `{"hook_event_name":"afterShellExecution","workspace_roots":["/x/p"],"command":"ls"}`); e.Kind != event.ToolCall {
+		t.Fatalf("%+v", e)
+	}
+}

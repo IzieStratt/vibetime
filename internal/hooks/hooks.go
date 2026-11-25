@@ -2,15 +2,49 @@
 package hooks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/IzieStratt/vibetime/internal/event"
+	"github.com/IzieStratt/vibetime/internal/substance"
 )
+
+// RelevanceFor scores how much of prompt's vocabulary already exists in cwd's project files
+// (nil when unknown). It runs inside a hook, so it gets a small time budget. Stubbed in tests.
+var RelevanceFor = defaultRelevanceFor
+
+func defaultRelevanceFor(cwd, prompt string) *int {
+	if len(strings.TrimSpace(prompt)) < substance.TrivialChars {
+		return nil // too short to matter: length alone already marks it low effort
+	}
+	v := substance.ProjectVocab(cwd, 150*time.Millisecond)
+	if v == nil {
+		return nil
+	}
+	r := substance.Relevance(prompt, v)
+	return &r
+}
+
+var testCmd = regexp.MustCompile(`(?:^|[\s;&|(])(?:go test|cargo (?:test|nextest)|npm (?:run )?test|npm t|yarn test|pnpm (?:run )?test|bun test|npx (?:jest|vitest)|jest|vitest|pytest|python3? -m (?:pytest|unittest)|tox|make (?:test|check)|mvn (?:\S+ )*test|gradlew? (?:\S+ )*test|dotnet test|rspec|bundle exec rspec|phpunit|mix test|swift test|deno test|zig build test|ctest)(?:\s|$)`)
+
+// testRunEvent returns a TestRun event if command looks like a test command. The command
+// itself is not recorded, only a short hash so a fail and a later pass can be paired.
+func testRunEvent(base event.Event, command string, pass bool) []event.Event {
+	command = strings.Join(strings.Fields(command), " ")
+	if command == "" || !testCmd.MatchString(command) {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(command))
+	base.Kind, base.CmdHash, base.Pass = event.TestRun, hex.EncodeToString(sum[:6]), &pass
+	return []event.Event{base}
+}
 
 // ProjectFor names the project for a working directory: the git top-level folder name,
 // falling back to the directory's own name.
@@ -36,6 +70,45 @@ type claudeLike struct {
 	Prompt    string          `json:"prompt"`
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
+	// ToolResponse is Claude Code's PostToolUse result; others use tool_output.
+	ToolResponse json.RawMessage `json:"tool_response"`
+	ToolOutput   json.RawMessage `json:"tool_output"`
+}
+
+type shellInput struct {
+	Command string `json:"command"`
+}
+
+// shellTool reports whether a harness tool name is its shell tool (Claude Code "Bash",
+// Gemini "run_shell_command", Copilot/Continue/Augment "bash"/"shell"/"execute_bash"...).
+func shellTool(name string) bool {
+	switch strings.ToLower(name) {
+	case "bash", "shell", "run_shell_command", "execute_bash", "run_command", "launch-process", "terminal":
+		return true
+	}
+	return false
+}
+
+// failed reports whether a tool response says the command did not succeed. Harnesses that
+// only fire PostToolUse on success send nothing, which counts as a pass.
+func failed(resp json.RawMessage) bool {
+	var r struct {
+		IsError     bool  `json:"is_error"`
+		Interrupted bool  `json:"interrupted"`
+		ExitCode    *int  `json:"exit_code"`
+		ExitCamel   *int  `json:"exitCode"`
+		Code        *int  `json:"code"`
+		Success     *bool `json:"success"`
+	}
+	if len(resp) == 0 || json.Unmarshal(resp, &r) != nil {
+		return false
+	}
+	for _, c := range []*int{r.ExitCode, r.ExitCamel, r.Code} {
+		if c != nil && *c != 0 {
+			return true
+		}
+	}
+	return r.IsError || r.Interrupted || (r.Success != nil && !*r.Success)
 }
 
 type editInput struct {
@@ -61,14 +134,37 @@ func Claude(harness string, raw []byte, now time.Time) ([]event.Event, error) {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
 	}
-	base := event.Event{Time: now, Project: ProjectFor(in.Cwd), Repo: RepoFor(in.Cwd), Harness: harness}
+	base := event.Event{Time: now, Project: ProjectFor(in.Cwd), Repo: RepoFor(in.Cwd), Harness: harness, Cwd: in.Cwd}
 	switch in.Event {
 	case "SessionStart":
 		base.Kind = event.SessionStart
 	case "UserPromptSubmit", "BeforeAgent":
 		base.Kind, base.PromptText = event.Prompt, in.Prompt
+		base.RelevancePM = RelevanceFor(in.Cwd, in.Prompt)
+	case "PostToolUseFailure":
+		// Claude Code fires this instead of PostToolUse when a tool errors; a failed test
+		// command is the first half of a fail→pass loop. Other failures are still agent work.
+		base.Kind = event.ToolCall
+		if shellTool(in.ToolName) {
+			var si shellInput
+			json.Unmarshal(in.ToolInput, &si)
+			if t := testRunEvent(base, si.Command, false); t != nil {
+				return t, nil
+			}
+		}
 	case "PostToolUse", "AfterTool":
 		base.Kind = event.ToolCall
+		if shellTool(in.ToolName) {
+			var si shellInput
+			json.Unmarshal(in.ToolInput, &si)
+			resp := in.ToolResponse
+			if len(resp) == 0 {
+				resp = in.ToolOutput
+			}
+			if t := testRunEvent(base, si.Command, !failed(resp)); t != nil {
+				return t, nil
+			}
+		}
 		switch in.ToolName {
 		case "Edit", "Write", "MultiEdit", "write_file", "replace":
 			var ei editInput
@@ -104,9 +200,9 @@ func Codex(raw []byte, now time.Time) ([]event.Event, error) {
 	p, repo := ProjectFor(in.Cwd), RepoFor(in.Cwd)
 	var out []event.Event
 	for _, m := range in.Inputs {
-		out = append(out, event.Event{Time: now, Kind: event.Prompt, Project: p, Repo: repo, Harness: "codex", PromptText: m})
+		out = append(out, event.Event{Time: now, Kind: event.Prompt, Project: p, Repo: repo, Harness: "codex", PromptText: m, RelevancePM: RelevanceFor(in.Cwd, m), Cwd: in.Cwd})
 	}
-	return append(out, event.Event{Time: now, Kind: event.Stop, Project: p, Repo: repo, Harness: "codex"}), nil
+	return append(out, event.Event{Time: now, Kind: event.Stop, Project: p, Repo: repo, Harness: "codex", Cwd: in.Cwd}), nil
 }
 
 // Parse dispatches by harness name.
@@ -165,9 +261,13 @@ type cursorLike struct {
 		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 	} `json:"edits"`
-	ToolName  string          `json:"tool_name"`
-	ToolInput json.RawMessage `json:"tool_input"`
-	Context   struct {
+	ToolName     string          `json:"tool_name"`
+	ToolInput    json.RawMessage `json:"tool_input"`
+	ToolResponse json.RawMessage `json:"tool_response"`
+	ToolOutput   json.RawMessage `json:"tool_output"`
+	Command      string          `json:"command"` // Cursor afterShellExecution
+	ExitCode     *int            `json:"exit_code"`
+	Context      struct {
 		ModelName string `json:"modelName"`
 	} `json:"context"`
 }
@@ -195,6 +295,7 @@ func Cursor(harness string, raw []byte, now time.Time) ([]event.Event, error) {
 		if base.PromptText == "" {
 			base.PromptText = in.UserPrompt
 		}
+		base.RelevancePM = RelevanceFor(dir, base.PromptText)
 	case "afterfileedit":
 		base.Kind = event.Edit
 		for _, e := range in.Edits {
@@ -203,6 +304,22 @@ func Cursor(harness string, raw []byte, now time.Time) ([]event.Event, error) {
 		}
 	case "posttooluse", "aftershellexecution", "aftermcpexecution":
 		base.Kind = event.ToolCall
+		cmd, pass := in.Command, true
+		if shellTool(in.ToolName) {
+			var si shellInput
+			json.Unmarshal(in.ToolInput, &si)
+			cmd = si.Command
+		}
+		resp := in.ToolResponse
+		if len(resp) == 0 {
+			resp = in.ToolOutput
+		}
+		if failed(resp) || (in.ExitCode != nil && *in.ExitCode != 0) {
+			pass = false
+		}
+		if t := testRunEvent(base, cmd, pass); t != nil {
+			return t, nil
+		}
 		if strings.EqualFold(in.ToolName, "edit") || strings.EqualFold(in.ToolName, "write") {
 			var ei editInput
 			json.Unmarshal(in.ToolInput, &ei)
@@ -218,7 +335,7 @@ func Cursor(harness string, raw []byte, now time.Time) ([]event.Event, error) {
 }
 
 func ev(now time.Time, harness, dir, model string) event.Event {
-	return event.Event{Time: now, Project: ProjectFor(dir), Repo: RepoFor(dir), Harness: harness, Model: model}
+	return event.Event{Time: now, Project: ProjectFor(dir), Repo: RepoFor(dir), Harness: harness, Model: model, Cwd: dir}
 }
 
 // Reply is what the hook must print on stdout for harnesses that read a JSON answer.

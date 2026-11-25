@@ -15,6 +15,7 @@ import (
 
 	"github.com/IzieStratt/vibetime/internal/api"
 	"github.com/IzieStratt/vibetime/internal/client"
+	"github.com/IzieStratt/vibetime/internal/control"
 	"github.com/IzieStratt/vibetime/internal/event"
 	"github.com/IzieStratt/vibetime/internal/hooks"
 	"github.com/IzieStratt/vibetime/internal/presence"
@@ -40,6 +41,10 @@ commands:
   login              -server URL (-handle NAME | -token TOKEN)
   submit             -project NAME -repo REPO -from RFC3339 [-to RFC3339] [-include-prompts]
   import-hackatime   -key KEY [-since YYYY-MM-DD]
+  exclude <folder>   never record activity inside this folder (-list, -remove <folder>)
+  pause [DURATION]   stop recording for 30m, 1h, 2h or tomorrow (default 30m); resume ends it early
+  resume             end a pause
+  forward            -url URL [-key KEY] | -off   also send WakaTime heartbeats to another endpoint
   service            install | uninstall  (start vibetime at login)
   version            print the version
 
@@ -86,6 +91,14 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stderr io.W
 		return importHackatime(args[1:], stderr)
 	case "service":
 		return svc(args[1:], stderr)
+	case "exclude":
+		return exclude(args[1:], stderr)
+	case "pause":
+		return pause(args[1:], stderr)
+	case "resume":
+		return resume(stderr)
+	case "forward":
+		return forward(args[1:], stderr)
 	case "version":
 		fmt.Fprintln(stderr, "vibetime 0.1.0")
 		return 0
@@ -131,8 +144,16 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		return 1
 	}
 	defer s.Close()
+	ctl := &control.Store{Dir: dataDir()}
+	// Presence carries no project, so it is gated by the most recent event's folder: presence
+	// while paused, or while working inside an excluded folder, is never stored.
 	w := &presence.Watcher{Idle: presence.System, Threshold: 2 * time.Minute, Interval: 15 * time.Second, Now: time.Now,
-		Emit: func(e event.Event) { s.Append(e) }}
+		Emit: func(e event.Event) {
+			if cfg, err := ctl.Load(); err == nil && (cfg.Paused(time.Now()) || cfg.Excludes(ctl.LastCwd())) {
+				return
+			}
+			s.Append(e)
+		}}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go w.Run(ctx)
@@ -141,7 +162,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		go sy.Run(time.Minute, ctx.Done(), func(err error) { fmt.Fprintln(stderr, "sync:", err) })
 		fmt.Fprintf(stderr, "syncing to %s as device %s\n", cfg.Server, cfg.Device)
 	}
-	srv := &http.Server{Addr: *addr, Handler: (&api.Server{Store: s, Now: time.Now}).Handler(), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: *addr, Handler: (&api.Server{Store: s, Now: time.Now, Control: ctl}).Handler(), ReadHeaderTimeout: 5 * time.Second}
 	fmt.Fprintf(stderr, "vibetime listening on %s (db %s)\n", *addr, *db)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -345,5 +366,125 @@ func status(args []string, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprint(Stdout, report.Render(evs, now, *days, time.Local))
+	if cfg, err := (&control.Store{Dir: dataDir()}).Load(); err == nil {
+		if cfg.Paused(now) {
+			fmt.Fprintf(Stdout, "recording paused until %s (vibetime resume to end early)\n", cfg.PausedUntil.Local().Format("Mon 15:04"))
+		}
+		if len(cfg.Excluded) > 0 {
+			fmt.Fprintf(Stdout, "excluded folders: %d (vibetime exclude -list)\n", len(cfg.Excluded))
+		}
+	}
+	return 0
+}
+
+func exclude(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("exclude", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	list := fs.Bool("list", false, "list excluded folders")
+	remove := fs.String("remove", "", "stop excluding this folder")
+	ctl := &control.Store{Dir: dataDir()}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *list {
+		cfg, err := ctl.Load()
+		if err != nil {
+			fmt.Fprintln(stderr, "exclude:", err)
+			return 1
+		}
+		for _, f := range cfg.Excluded {
+			fmt.Fprintln(Stdout, f)
+		}
+		return 0
+	}
+	if *remove != "" {
+		removed, err := ctl.Include(*remove)
+		if err != nil {
+			fmt.Fprintln(stderr, "exclude:", err)
+			return 1
+		}
+		if !removed {
+			fmt.Fprintln(stderr, "exclude: that folder was not excluded")
+			return 1
+		}
+		fmt.Fprintln(stderr, "no longer excluded")
+		return 0
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: vibetime exclude <folder> | -list | -remove <folder>")
+		return 2
+	}
+	p, err := ctl.Exclude(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(stderr, "exclude:", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "excluded %s: nothing inside it is recorded from now on\n", p)
+	return 0
+}
+
+func pause(args []string, stderr io.Writer) int {
+	arg := "30m"
+	if len(args) == 1 {
+		arg = args[0]
+	} else if len(args) > 1 {
+		fmt.Fprintln(stderr, "usage: vibetime pause [30m|1h|2h|tomorrow]")
+		return 2
+	}
+	until, err := control.ParsePause(arg, time.Now())
+	if err == nil {
+		err = (&control.Store{Dir: dataDir()}).Pause(until)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "pause:", err)
+		return 2
+	}
+	fmt.Fprintf(stderr, "paused until %s; vibetime resume ends it early\n", until.Local().Format("Mon 15:04"))
+	return 0
+}
+
+func resume(stderr io.Writer) int {
+	if err := (&control.Store{Dir: dataDir()}).Resume(); err != nil {
+		fmt.Fprintln(stderr, "resume:", err)
+		return 1
+	}
+	fmt.Fprintln(stderr, "resumed")
+	return 0
+}
+
+func forward(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("forward", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	url := fs.String("url", "", "endpoint to receive a copy of each WakaTime heartbeat (e.g. your Hackatime API)")
+	key := fs.String("key", "", "API key sent as HTTP Basic auth (WakaTime style)")
+	off := fs.Bool("off", false, "stop forwarding")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	ctl := &control.Store{Dir: dataDir()}
+	var err error
+	switch {
+	case *off:
+		err = ctl.SetForward("", "")
+	case *url != "":
+		err = ctl.SetForward(*url, *key)
+	default:
+		cfg, lerr := ctl.Load()
+		if lerr != nil {
+			fmt.Fprintln(stderr, "forward:", lerr)
+			return 1
+		}
+		if cfg.ForwardURL == "" {
+			fmt.Fprintln(stderr, "forwarding is off; usage: vibetime forward -url URL [-key KEY] | -off")
+		} else {
+			fmt.Fprintf(stderr, "forwarding heartbeats to %s\n", cfg.ForwardURL)
+		}
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "forward:", err)
+		return 2
+	}
+	fmt.Fprintln(stderr, "forward settings saved (the running agent picks them up on the next heartbeat)")
 	return 0
 }

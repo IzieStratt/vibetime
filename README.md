@@ -52,9 +52,42 @@ vibetime status            # today, last 7 days, attention split, per project
 vibetime status -days 30
 ```
 
+Control what gets recorded:
+
+```sh
+vibetime exclude ~/work/private-client   # never record anything inside this folder
+vibetime exclude -list
+vibetime exclude -remove ~/work/private-client
+vibetime pause 1h                        # stop recording: 30m, 1h, 2h or "tomorrow"
+vibetime resume                          # end a pause early
+```
+
+Excluded folders and pauses are checked by the running agent on every event, so no restart is needed. Paused events are dropped (not queued), and presence is not recorded while paused.
+
+Forward WakaTime heartbeats to another endpoint, such as your previous Hackatime API, as well as recording them locally:
+
+```sh
+vibetime forward -url https://hackatime.example/api/v1/users/current/heartbeats -key YOUR_KEY
+vibetime forward -off
+```
+
+Off by default. The copy is sent in the background with a 2-second timeout, so it never slows or breaks the local response. Your key is stored in plaintext in `control.json` in the data directory (mode 0600).
+
 ## How hours are made trustworthy
 
 The agent appends every event to a local hash chain and sends the chain head to the server every minute. A submission only counts events covered by heads the server received *at the time*, so history can't be backfilled or made up later. Submissions are also checked server-side and a human reviews anything suspicious.
+
+## Substance caps (ideas from Tally)
+
+Borrowed from [Tally](https://github.com/sectersion/tally), whose "count decisions, not activity" model is a good fit for the steering bucket:
+
+- **Try-again prompts earn little.** A prompt under 20 characters, or one that shares under 15% of its vocabulary with the project's own files, is low effort: repeats within 10 minutes earn at most a minute of watching.
+- **Substantive prompts earn think time.** A prompt that clearly refers to the project's code (50% or more relevance) credits up to 5 minutes of composing before it, but only if OS presence covers at least half of those minutes, and never over time already credited.
+- **Fail→pass loops earn longer watching.** Test commands run by the agent are recorded as a hash and a pass/fail. The prompt between a failing and a passing run of the same command (within an hour) gets a 20 minute watch cap instead of 5, still bounded by the next event or the agent finishing.
+- **Excess is reported, not lost.** Attention beyond a cap, while the agent was still working and you stayed, shows as `Unverified (over the caps, not counted)` in `vibetime status`. It never counts toward hours.
+- **README badge.** `https://img.shields.io/endpoint?url=<server>/api/v1/users/<handle>/badge.json` shows your attended hours for the last 30 days (public profiles only).
+
+Relevance is computed locally at hook time and only the number is recorded (`relevance_pm` on the prompt event), never the text. Because it is self-reported, the server treats it as a hint, not proof.
 
 ## Server
 

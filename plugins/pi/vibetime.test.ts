@@ -18,7 +18,7 @@ test("session start and agent end", () => {
 
 test("input: human prompt vs extension-injected", () => {
   const p = ev("input", { source: "interactive", text: "fix recoil" });
-  assert.deepEqual(p, { time: now.toISOString(), project: "cs2", harness: "pi", kind: "prompt", prompt_text: "fix recoil" });
+  assert.deepEqual(p, { time: now.toISOString(), project: "cs2", harness: "pi", kind: "prompt", prompt_text: "fix recoil", cwd: "/home/kid/cs2" });
   assert.equal(ev("input", { source: "rpc", text: "x" })?.kind, "prompt");
   assert.equal(ev("input", { source: "extension", text: "injected" }), null);
 });

@@ -246,3 +246,99 @@ func TestWatchClipsAtStop(t *testing.T) {
 		t.Fatalf("unattended agent should earn 0, got %v", Compute(un, Default)["a"])
 	}
 }
+
+func rel(e event.Event, pm int) event.Event { e.RelevancePM = &pm; e.PromptLen = 80; return e }
+
+func testRun(min float64, cmd string, pass bool) event.Event {
+	e := at(min, event.TestRun, "a")
+	e.CmdHash, e.Pass = cmd, &pass
+	return e
+}
+
+func TestThinkCreditNeedsSubstanceAndPresence(t *testing.T) {
+	m := time.Minute
+	prompt := func(pm int) event.Event { return rel(at(10, event.Prompt, "a"), pm) }
+	presence := every(5.5, 9.5, 1, event.Active, "")
+	// substantive + present for the 5 minutes before: 5m think + 1m steering (re-engages at 11)
+	got := Compute(append(append([]event.Event{prompt(800)}, presence...), at(11, event.Heartbeat, "a")), Default)["a"]
+	if got != 6*m {
+		t.Errorf("substantive: got %v want 6m", got)
+	}
+	// same shape but trivially related prompt: no think credit
+	if got := Compute(append(append([]event.Event{prompt(100)}, presence...), at(11, event.Heartbeat, "a")), Default)["a"]; got != m {
+		t.Errorf("irrelevant: got %v want 1m", got)
+	}
+	// substantive but nobody there: nothing
+	if got := Compute([]event.Event{prompt(800), at(11, event.Heartbeat, "a")}, Default)["a"]; got != m {
+		t.Errorf("no presence: got %v want 1m", got)
+	}
+}
+
+func TestThinkCreditNeverDoubleCounts(t *testing.T) {
+	m := time.Minute
+	evs := append(every(0, 9, 1, event.Heartbeat, "a"), rel(at(10, event.Prompt, "a"), 900), at(10.5, event.Heartbeat, "a"))
+	evs = append(evs, every(5.5, 9.5, 1, event.Active, "")...)
+	if got := Compute(evs, Default)["a"]; got != 10*m+30*time.Second {
+		t.Errorf("got %v want 10m30s", got)
+	}
+}
+
+func TestFailPassLoopExtendsWatch(t *testing.T) {
+	m := time.Minute
+	base := func(loop bool) []event.Event {
+		evs := []event.Event{at(0, event.Prompt, "a"), testRun(1, "go-test", false), at(8, event.Active, ""), at(15, event.Active, "")}
+		evs = append(evs, rel(at(2, event.Prompt, "a"), 700))
+		if loop {
+			evs = append(evs, testRun(14, "go-test", true))
+		} else {
+			evs = append(evs, testRun(14, "other", true))
+		}
+		return evs
+	}
+	// prompt at 2 is the one between the fail (1) and the pass (14); presence at 8 and 15 proves
+	// the user stayed. Without the loop the 5m window (2→7) holds no proof of staying, so the
+	// prompt earns nothing; with it the window is 20m and reaches the re-engagement at 16.
+	with := Compute(append(base(true), at(16, event.Heartbeat, "a")), Default)["a"]
+	without := Compute(append(base(false), at(16, event.Heartbeat, "a")), Default)["a"]
+	if with <= without {
+		t.Errorf("loop credit %v should exceed plain %v", with, without)
+	}
+	if with-without != 14*m {
+		t.Errorf("loop should add the 14m from the prompt at 2 to the heartbeat at 16, got %v", with-without)
+	}
+}
+
+func TestFailPassLoopNeedsPromptBetween(t *testing.T) {
+	tl := []event.Event{at(0, event.Prompt, "a")}
+	tests := []event.Event{testRun(1, "x", false), testRun(5, "x", true)}
+	if len(loopPrompts(tl, tests)) != 0 {
+		t.Error("a prompt before the failure must not count")
+	}
+	tl = append(tl, at(2, event.Prompt, "a"))
+	if !loopPrompts(tl, tests)[1] {
+		t.Error("prompt between fail and pass should close the loop")
+	}
+	// a pass in between already closed it
+	tests = []event.Event{testRun(1, "x", false), testRun(3, "x", true), testRun(5, "x", true)}
+	if loopPrompts(tl, tests)[1] && len(loopPrompts(tl, tests)) != 1 {
+		t.Error("loop must close only once")
+	}
+}
+
+func TestUnverifiedCapturesCappedExcess(t *testing.T) {
+	m := time.Minute
+	// prompt, user present, agent finishes only at minute 12: 5m credited, 7m beyond the cap.
+	stop := at(12, event.Stop, "a")
+	evs := []event.Event{at(0, event.Prompt, "a"), at(3, event.Active, ""), stop}
+	// the stop is outside the 5m window, so presence (minute 3) qualifies the prompt
+	if got := Compute(evs, Default)["a"]; got != 5*m {
+		t.Fatalf("credited %v want 5m", got)
+	}
+	if got := Unverified(evs, Default)["a"]; got != 7*m {
+		t.Errorf("unverified %v want 7m", got)
+	}
+	// nothing at the keyboard: neither credited nor unverified
+	if got := Unverified([]event.Event{at(0, event.Prompt, "a"), stop}, Default)["a"]; got != 0 {
+		t.Errorf("unattended excess must not be reported, got %v", got)
+	}
+}

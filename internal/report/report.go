@@ -111,6 +111,18 @@ func Render(events []event.Event, now time.Time, days int, loc *time.Location) s
 		fmt.Fprintf(&b, "  How you worked: %d%% hands-on · %d%% steering · %d%% watching\n\n",
 			hands, steer, 100-hands-steer)
 	}
+	// Attention that was real but capped (e.g. a long agent run after a prompt). Shown for
+	// transparency; it never counts toward attended time.
+	cut := start.Add(-attend.Default.RawCap)
+	var recent []event.Event
+	for _, e := range events {
+		if !e.Time.Before(cut) {
+			recent = append(recent, e)
+		}
+	}
+	if u := attend.Total(attend.Unverified(recent, attend.Default)); u >= time.Minute {
+		fmt.Fprintf(&b, "  Unverified (over the caps, not counted): %s\n\n", dur(u))
+	}
 	if len(list) == 0 {
 		b.WriteString("  No tracked time yet. Start your AI tool with a vibetime plugin installed.\n")
 		return b.String()

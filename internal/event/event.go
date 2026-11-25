@@ -22,9 +22,10 @@ const (
 	Idle         Kind = "idle"      // OS reports the user went idle / away
 	Active       Kind = "active"    // presence watcher: OS saw real input this minute (internal only)
 	Stop         Kind = "stop"      // agent finished its turn
+	TestRun      Kind = "test_run"  // a test command ran (agent-initiated unless Human); Pass says how it ended
 )
 
-var validKinds = map[Kind]bool{SessionStart: true, Prompt: true, ToolCall: true, Edit: true, Heartbeat: true, Idle: true, Active: true, Stop: true}
+var validKinds = map[Kind]bool{SessionStart: true, Prompt: true, ToolCall: true, Edit: true, Heartbeat: true, Idle: true, Active: true, Stop: true, TestRun: true}
 
 // Event is one locally recorded signal. Content fields (PromptText) never leave the machine
 // except inside an explicit submission bundle.
@@ -48,6 +49,19 @@ type Event struct {
 	// to the chain. Cross-account duplicate detection uses it, so reformatting a copied prompt
 	// (whitespace/case) no longer dodges the check.
 	PromptNorm string `json:"prompt_norm,omitempty"`
+	// RelevancePM (0..1000) is how much of a prompt's vocabulary already exists in the project's
+	// files, computed locally at hook time (substance.Relevance). nil = unknown (no git repo, or
+	// the hook ran out of time). Only this number is recorded, never the text.
+	RelevancePM *int `json:"relevance_pm,omitempty"`
+	// CmdHash identifies a test command (TestRun), so a fail followed by a pass of the same
+	// command can be recognized as one loop without recording the command itself.
+	CmdHash string `json:"cmd_hash,omitempty"`
+	// Pass is the outcome of a TestRun.
+	Pass *bool `json:"pass,omitempty"`
+	// Cwd is transient: plugins that post events directly send their working directory so the
+	// agent can score a prompt's relevance, then clears it before storing. It is never stored,
+	// chained or uploaded.
+	Cwd string `json:"cwd,omitempty"`
 	// Repo is the normalized git remote (e.g. github.com/owner/name); binds time to a repo.
 	Repo string `json:"repo,omitempty"`
 }
@@ -123,13 +137,29 @@ func (e Event) PromptLength() int {
 // LowEffortPromptLen: prompts shorter than this ("continue", "ok", "go") are low effort.
 const LowEffortPromptLen = 20
 
-// LowEffort reports whether e is a prompt known to be very short.
+// LowEffortRelevancePM: a prompt sharing less of its vocabulary than this with the project is
+// "try again"-grade even when long (Tally's trivial-prompt rule).
+const LowEffortRelevancePM = 150
+
+// SubstantiveRelevancePM is the relevance a prompt needs to earn think-time credit.
+const SubstantiveRelevancePM = 500
+
+// LowEffort reports whether e is a prompt known to be very short or unrelated to the project.
 func (e Event) LowEffort() bool {
 	if e.Kind != Prompt {
 		return false
 	}
 	n := e.PromptLength()
+	if e.RelevancePM != nil && *e.RelevancePM < LowEffortRelevancePM {
+		return n > 0
+	}
 	return n > 0 && n < LowEffortPromptLen
+}
+
+// Substantive reports whether e is a long prompt that clearly refers to the project's own code.
+func (e Event) Substantive() bool {
+	return e.Kind == Prompt && e.RelevancePM != nil && *e.RelevancePM >= SubstantiveRelevancePM &&
+		e.PromptLength() >= LowEffortPromptLen
 }
 
 // Internal reports whether only the agent itself may record this kind. Plugins and other

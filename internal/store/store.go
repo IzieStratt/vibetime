@@ -59,6 +59,7 @@ func (s *Store) Append(e event.Event) (string, error) {
 		return "", err
 	}
 	e.Time = e.Time.UTC()
+	e.Cwd = "" // transient: never chained, stored or uploaded
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	h, err := chain.Next(s.head, e)

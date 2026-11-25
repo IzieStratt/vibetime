@@ -503,3 +503,24 @@ func TestConcurrentSubmitNoDoubleCredit(t *testing.T) {
 		t.Fatalf("%d submits credited time, want 1 (total credited %d)", nonzero, creditedTotal)
 	}
 }
+
+func TestBadge(t *testing.T) {
+	e := newEnv(t)
+	tok := e.user("rowan")
+	a := e.agent(tok)
+	a.add(event.Event{Time: t0, Kind: event.Prompt, Project: "cs2"})
+	now := t0.Add(10 * time.Minute)
+	for i := 1; i <= 3; i++ {
+		a.sync(now, SyncMinute{Project: "cs2", Minute: now.Add(-time.Duration(i) * time.Minute).Unix(), Seconds: 60})
+	}
+	c, b := e.call("GET", "/api/v1/users/rowan/badge.json", "", nil)
+	var got map[string]any
+	json.Unmarshal(b, &got)
+	if c != 200 || got["schemaVersion"] != float64(1) || got["label"] != "vibetime" || got["message"] != "0.1 h attended (30d)" {
+		t.Fatalf("%d %s", c, b)
+	}
+	e.call("POST", "/api/v1/me", tok, map[string]bool{"public": false})
+	if c, _ := e.call("GET", "/api/v1/users/rowan/badge.json", "", nil); c != 404 {
+		t.Fatal("private user's badge must 404")
+	}
+}

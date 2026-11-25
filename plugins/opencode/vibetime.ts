@@ -13,6 +13,7 @@ export type VTEvent = {
   lines_added?: number;
   lines_removed?: number;
   prompt_text?: string;
+  cwd?: string; // lets the agent score prompt relevance; the agent drops it before storing
 };
 
 const lines = (s: unknown) => (typeof s === "string" && s !== "" ? s.split("\n").length : 0);
@@ -22,7 +23,7 @@ export function projectOf(dir: string) {
 }
 
 // toEvent maps one OpenCode bus event to a vibetime event (or null to ignore).
-export function toEvent(e: any, project: string, now = new Date()): VTEvent | null {
+export function toEvent(e: any, project: string, now = new Date(), cwd?: string): VTEvent | null {
   const base = { time: now.toISOString(), project, harness: "opencode" as const };
   const d = e?.data ?? {};
   switch (e?.type) {
@@ -30,7 +31,7 @@ export function toEvent(e: any, project: string, now = new Date()): VTEvent | nu
       return { ...base, kind: "session_start" };
     case "session.inbox.enqueued":
       if (d.item?.type !== "user") return null;
-      return { ...base, kind: "prompt", prompt_text: d.item?.payload?.text };
+      return { ...base, kind: "prompt", prompt_text: d.item?.payload?.text, ...(cwd ? { cwd } : {}) };
     case "session.tool.called": {
       const i = d.input ?? {};
       const added = lines(i.content) + lines(i.newString) + lines(i.new_string);
@@ -60,12 +61,13 @@ export default {
   id: "vibetime",
   setup(ctx: any) {
     const url = String(ctx.options?.url ?? DEFAULT_URL);
-    const project = projectOf(ctx.location?.directory ?? process.cwd());
+    const dir = String(ctx.location?.directory ?? process.cwd());
+    const project = projectOf(dir);
     const stream = ctx.event.subscribe();
     (async () => {
       try {
         for await (const e of stream) {
-          const ev = toEvent(e, project);
+          const ev = toEvent(e, project, new Date(), dir);
           if (ev) void send(url, ev);
         }
       } catch {}

@@ -28,7 +28,7 @@ export function toEvent(channel: string, event: any, cwd: string, now = new Date
       return { ...base, kind: "session_start" };
     case "input":
       if (event?.source === "extension") return null; // our own injected messages, not the human
-      return { ...base, kind: "prompt", prompt_text: event?.text };
+      return { ...base, kind: "prompt", prompt_text: event?.text, cwd };
     case "tool_call": {
       const t = event?.toolName;
       if (t === "write") return { ...base, kind: "edit", lines_added: lines(event?.input?.content) };
