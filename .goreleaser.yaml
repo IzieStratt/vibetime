@@ -38,7 +38,9 @@ homebrew_casks:
     repository:
       owner: IzieStratt
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      git:
+        url: git@github.com:IzieStratt/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
     homepage: "https://vs.izie.top/vibetime"
     description: "Passive, privacy-friendly AI time tracking"
     # Strip the quarantine xattr so the unsigned binary runs without a Gatekeeper prompt
