@@ -104,3 +104,16 @@ func TestTimezone(t *testing.T) {
 		t.Fatalf("UTC today should be 1m:\n%s", out)
 	}
 }
+
+func TestRenderShowsUnverified(t *testing.T) {
+	t0 := time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC)
+	evs := []event.Event{
+		{Time: t0, Kind: event.Prompt, Project: "a"},
+		{Time: t0.Add(3 * time.Minute), Kind: event.Active},
+		{Time: t0.Add(12 * time.Minute), Kind: event.Stop, Project: "a"},
+	}
+	out := Render(evs, t0.Add(time.Hour), 7, time.UTC)
+	if !strings.Contains(out, "Unverified (over the caps, not counted): 7m") {
+		t.Fatalf("missing unverified line:\n%s", out)
+	}
+}

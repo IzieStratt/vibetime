@@ -20,9 +20,24 @@ type Config struct {
 	// LowEffortCap replaces WatchCap after consecutive low-effort prompts ("continue"
 	// repeats): the first one keeps the full allowance, repeats earn only this much.
 	LowEffortCap time.Duration
+	// ThinkCap is how far back before a substantive prompt (one that clearly refers to the
+	// project's own code) composing time is credited. It needs OS-presence evidence for at
+	// least half of those minutes and never overlaps time already credited.
+	ThinkCap time.Duration
+	// LoopCap replaces WatchCap for the prompt that sits between a failing and a passing run
+	// of the same test command (a real fail→pass loop, closed within LoopWindow).
+	LoopCap time.Duration
+	// RawCap bounds how much beyond the credited window is reported as unverified.
+	RawCap time.Duration
 }
 
-var Default = Config{Timeout: 2 * time.Minute, WatchCap: 5 * time.Minute, LowEffortCap: time.Minute}
+// Default borrows Tally's substance caps: try-again prompts earn a minute, substantive prompts
+// earn composing time, and a closed fail→pass loop earns up to 20 minutes of watching.
+var Default = Config{Timeout: 2 * time.Minute, WatchCap: 5 * time.Minute, LowEffortCap: time.Minute,
+	ThinkCap: 5 * time.Minute, LoopCap: 20 * time.Minute, RawCap: time.Hour}
+
+// LoopWindow is how long a failing test run stays open for a later pass to close the loop.
+const LoopWindow = time.Hour
 
 // Compute returns attended duration per project.
 func Compute(events []event.Event, cfg Config) map[string]time.Duration {
@@ -53,11 +68,56 @@ func Minutes(events []event.Event, cfg Config) map[string]map[int64]time.Duratio
 
 // spans calls emit for every credited interval.
 func spans(events []event.Event, cfg Config, emit func(project string, from, to time.Time)) {
-	modeSpans(events, cfg, func(p string, from, to time.Time, _ Mode) { emit(p, from, to) })
+	modeSpans(events, cfg, func(p string, from, to time.Time, _ Mode) { emit(p, from, to) }, nil)
 }
 
-// modeSpans is spans with the kind of attention each interval represents.
-func modeSpans(events []event.Event, cfg Config, emitM func(project string, from, to time.Time, m Mode)) {
+// Unverified returns, per project, attention that looked real but exceeded a cap: the part of
+// a prompt's watch window beyond its limit while the agent was still working and you stayed.
+// It is reported next to attended time and never counts toward it.
+func Unverified(events []event.Event, cfg Config) map[string]time.Duration {
+	out := map[string]time.Duration{}
+	modeSpans(events, cfg, func(string, time.Time, time.Time, Mode) {}, func(p string, d time.Duration) { out[p] += d })
+	return out
+}
+
+// loopPrompts marks prompts (by index in the time-sorted tl) that close a fail→pass loop: the
+// latest prompt of a project before a passing test run, when an earlier run of the same
+// command failed within LoopWindow and before that prompt.
+func loopPrompts(tl, tests []event.Event) map[int]bool {
+	out := map[int]bool{}
+	for i, pass := range tests {
+		if pass.Pass == nil || !*pass.Pass || pass.CmdHash == "" {
+			continue
+		}
+		// the loop must not have been closed already by an earlier pass of the same command
+		var fail time.Time
+		for j := i - 1; j >= 0; j-- {
+			t := tests[j]
+			if t.Project != pass.Project || t.CmdHash != pass.CmdHash || pass.Time.Sub(t.Time) > LoopWindow {
+				continue
+			}
+			if t.Pass != nil && *t.Pass {
+				break
+			}
+			fail = t.Time
+		}
+		if fail.IsZero() {
+			continue
+		}
+		for k := len(tl) - 1; k >= 0; k-- {
+			c := tl[k]
+			if c.Kind == event.Prompt && c.Project == pass.Project && c.Time.After(fail) && c.Time.Before(pass.Time) {
+				out[k] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// modeSpans is spans with the kind of attention each interval represents. emitU, if set,
+// receives capped-out time per project.
+func modeSpans(events []event.Event, cfg Config, emitM func(project string, from, to time.Time, m Mode), emitU func(project string, d time.Duration)) {
 	// prompt spans: the first Timeout is steering (reading output, deciding), the rest is
 	// watching the agent; spans started by editor activity or hand edits are hands-on.
 	emit := func(p string, from, to time.Time, k event.Kind) {
@@ -73,7 +133,7 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 		emitM(p, from, split, Steering)
 		emitM(p, split, to, Watching)
 	}
-	var tl, stops, actives []event.Event
+	var tl, stops, actives, tests []event.Event
 	for _, e := range events {
 		switch {
 		case e.IsHumanActivity() || e.Kind == event.Idle:
@@ -82,12 +142,24 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 			stops = append(stops, e)
 		case e.Kind == event.Active:
 			actives = append(actives, e) // OS input: proof the human stayed at the keyboard
+		case e.Kind == event.TestRun:
+			tests = append(tests, e)
 		}
 	}
 	byTime := func(s []event.Event) { sort.SliceStable(s, func(i, j int) bool { return s[i].Time.Before(s[j].Time) }) }
 	byTime(tl)
 	byTime(stops)
 	byTime(actives)
+	byTime(tests)
+	loops := loopPrompts(tl, tests)
+	var credited time.Time // end of the latest interval emitted, so think credit never double counts
+	emitC := emit
+	emit = func(p string, from, to time.Time, k event.Kind) {
+		if to.After(credited) {
+			credited = to
+		}
+		emitC(p, from, to, k)
+	}
 
 	// firstStopAfter: the first time the agent said it finished, for project, in (after, before].
 	firstStopAfter := func(after, before time.Time, project string) time.Time {
@@ -98,6 +170,14 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 			}
 		}
 		return time.Time{}
+	}
+	activeCount := func(after, before time.Time) int {
+		j := sort.Search(len(actives), func(k int) bool { return actives[k].Time.After(after) })
+		n := 0
+		for ; j < len(actives) && !actives[j].Time.After(before); j++ {
+			n++
+		}
+		return n
 	}
 	hasActive := func(after, before time.Time) bool {
 		j := sort.Search(len(actives), func(k int) bool { return actives[k].Time.After(after) })
@@ -130,6 +210,23 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 		// agent finishing while you waited, or recorded OS presence. Firing prompts at an idle or
 		// unattended agent earns nothing.
 		limit := cfg.WatchCap
+		if loops[i] && cfg.LoopCap > limit {
+			limit = cfg.LoopCap
+		}
+		// Think credit: composing a substantive prompt. Starts after everything already
+		// credited and after the previous human event, and needs presence for half its minutes.
+		if cur.Substantive() && cfg.ThinkCap > 0 {
+			from := cur.Time.Add(-cfg.ThinkCap)
+			if credited.After(from) {
+				from = credited
+			}
+			if i > 0 && tl[i-1].Time.After(from) {
+				from = tl[i-1].Time
+			}
+			if mins := int(cur.Time.Sub(from) / time.Minute); mins >= 1 && activeCount(from, cur.Time)*2 >= mins {
+				emit(cur.Project, from, cur.Time, event.Heartbeat) // hands-on: nobody was prompting yet
+			}
+		}
 		if cur.LowEffort() {
 			for len(lowTimes) > 0 && cur.Time.Sub(lowTimes[0]) > LowEffortWindow {
 				lowTimes = lowTimes[1:]
@@ -154,6 +251,19 @@ func modeSpans(events []event.Event, cfg Config, emitM func(project string, from
 		}
 		if end.After(cur.Time) {
 			emit(cur.Project, cur.Time, end, cur.Kind)
+		}
+		// Excess: the agent was still working and you stayed, but the cap ended the credit.
+		if emitU != nil && !within(next) && !within(stop) {
+			raw := cur.Time.Add(cfg.RawCap)
+			if !next.IsZero() && next.Before(raw) {
+				raw = next
+			}
+			if s := firstStopAfter(window, raw, cur.Project); !s.IsZero() && s.Before(raw) {
+				raw = s
+			}
+			if raw.After(end) {
+				emitU(cur.Project, raw.Sub(end))
+			}
 		}
 	}
 }
@@ -202,6 +312,6 @@ func MinutesByMode(events []event.Event, cfg Config) map[string]map[int64]*Minut
 			out[p][k.Unix()][m] += end.Sub(from)
 			from = end
 		}
-	})
+	}, nil)
 	return out
 }

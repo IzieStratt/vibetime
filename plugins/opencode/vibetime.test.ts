@@ -41,3 +41,9 @@ test("ignored and malformed", () => {
   assert.equal(toEvent(null, "g"), null);
   assert.equal(toEvent({}, "g"), null);
 });
+
+test("prompt carries cwd when known so the agent can score relevance", () => {
+  const p = toEvent({ type: "session.inbox.enqueued", data: { item: { type: "user", payload: { text: "fix it" } } } }, "game", now, "/w/game");
+  assert.equal(p?.cwd, "/w/game");
+  assert.equal(toEvent({ type: "session.created" }, "game", now, "/w/game")?.cwd, undefined);
+});

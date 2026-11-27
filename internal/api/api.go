@@ -4,6 +4,8 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"github.com/IzieStratt/vibetime/internal/attend"
+	"github.com/IzieStratt/vibetime/internal/control"
 	"github.com/IzieStratt/vibetime/internal/event"
+	"github.com/IzieStratt/vibetime/internal/hooks"
 	"github.com/IzieStratt/vibetime/internal/store"
 )
 
@@ -23,6 +27,29 @@ type Server struct {
 	Store   *store.Store
 	Now     func() time.Time
 	MaxSkew time.Duration // 0 = DefaultMaxSkew
+	// Control holds the user's exclusions, pause and forwarding settings (nil = none).
+	Control *control.Store
+}
+
+// settings returns the current controls; with no control store, nothing is excluded or paused.
+func (s *Server) settings() control.Settings {
+	if s.Control == nil {
+		return control.Settings{}
+	}
+	cfg, err := s.Control.Load()
+	if err != nil {
+		// An unreadable control file must not silently disable the user's pause or exclusions:
+		// keep dropping the most sensitive class (everything) until it is fixed.
+		return control.Settings{PausedUntil: s.now().Add(time.Hour)}
+	}
+	return cfg
+}
+
+func (s *Server) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 func (s *Server) Handler() http.Handler {
@@ -73,8 +100,28 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	accepted, stale := 0, 0
+	cfg := s.settings()
+	if cfg.Paused(s.now()) {
+		writeJSON(w, 202, map[string]any{"accepted": 0, "stale": 0, "paused": true, "head": s.Store.Head()})
+		return
+	}
+	accepted, stale, excluded := 0, 0, 0
 	for _, e := range evs {
+		// Note the folder before the exclusion check: presence is gated by the most recent folder
+		// the user was in, and that includes an excluded one, so presence there is withheld.
+		if s.Control != nil {
+			s.Control.NoteCwd(e.Cwd)
+		}
+		if cfg.Excludes(e.Cwd) {
+			excluded++
+			continue
+		}
+		// Plugins that post directly can't score relevance themselves: do it here from the
+		// working directory they sent, then drop it so it never reaches the chain.
+		if e.Kind == event.Prompt && e.RelevancePM == nil && e.Cwd != "" && e.PromptText != "" {
+			e.RelevancePM = hooks.RelevanceFor(e.Cwd, e.PromptText)
+		}
+		e.Cwd = ""
 		if !s.fresh(e) {
 			stale++
 			continue
@@ -85,7 +132,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 		accepted++
 	}
-	writeJSON(w, 202, map[string]any{"accepted": accepted, "stale": stale, "head": s.Store.Head()})
+	writeJSON(w, 202, map[string]any{"accepted": accepted, "stale": stale, "excluded": excluded, "head": s.Store.Head()})
 }
 
 type wakaHB struct {
@@ -95,29 +142,60 @@ type wakaHB struct {
 	IsWrite  bool    `json:"is_write"`
 	Lines    int     `json:"lines"`
 	Category string  `json:"category"`
+	Entity   string  `json:"entity"`
 	AILines  int     `json:"ai_line_changes"`
 }
 
 func (s *Server) waka(w http.ResponseWriter, r *http.Request) {
-	body := http.MaxBytesReader(w, r.Body, maxBody)
-	var raw json.RawMessage
-	if err := json.NewDecoder(body).Decode(&raw); err != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
+	var raw json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	cfg := s.settings()
+	if cfg.Paused(s.now()) {
+		// Paused: answer like a normal success so editors don't show errors, but store and
+		// forward nothing.
+		writeJSON(w, 202, map[string]any{"responses": []any{}, "paused": true})
+		return
+	}
 	var hbs []wakaHB
-	if len(raw) > 0 && raw[0] == '[' {
-		if err := json.Unmarshal(raw, &hbs); err != nil {
+	var kept []json.RawMessage // heartbeats that survive exclusions, in the sender's own bytes
+	isArray := len(raw) > 0 && raw[0] == '['
+	var items []json.RawMessage
+	if isArray {
+		if err := json.Unmarshal(raw, &items); err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
 	} else {
-		var one wakaHB
-		if err := json.Unmarshal(raw, &one); err != nil {
+		items = []json.RawMessage{raw}
+	}
+	for _, it := range items {
+		var h wakaHB
+		if err := json.Unmarshal(it, &h); err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		hbs = []wakaHB{one}
+		// Excluded folders are dropped before anything is stored or forwarded.
+		if h.Entity != "" && cfg.Excludes(h.Entity) {
+			continue
+		}
+		hbs = append(hbs, h)
+		kept = append(kept, it)
+	}
+	if cfg.ForwardURL != "" && len(kept) > 0 {
+		// Forwarding is best effort and never on the local response path.
+		fwd := append([]byte(nil), body...)
+		if isArray && len(kept) != len(items) {
+			fwd, _ = json.Marshal(kept)
+		}
+		go forwardHeartbeats(cfg.ForwardURL, cfg.ForwardKey, fwd)
 	}
 	resp := make([]any, 0, len(hbs))
 	for _, h := range hbs {
@@ -146,6 +224,31 @@ func (s *Server) waka(w http.ResponseWriter, r *http.Request) {
 		resp = append(resp, []any{map[string]any{"data": h}, 201})
 	}
 	writeJSON(w, 202, map[string]any{"responses": resp})
+}
+
+// forwardTimeout bounds each forwarded heartbeat so a slow or dead endpoint can't pile up
+// goroutines.
+const forwardTimeout = 2 * time.Second
+
+// forwardHeartbeats POSTs a copy of a WakaTime heartbeat body to the user's previous endpoint.
+// Failures are ignored: forwarding is a convenience and must never affect local recording.
+func forwardHeartbeats(target, key string, body []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), forwardTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(key)))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	resp.Body.Close()
 }
 
 // wakaUser answers the WakaTime /users/current probe. The agent has no WakaTime account;

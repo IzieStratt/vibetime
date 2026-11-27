@@ -109,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /api/v1/submissions/{id}", s.auth(s.getSubmission))
 	m.HandleFunc("POST /api/v1/submissions/{id}/review", s.auth(s.review))
 	m.HandleFunc("GET /api/v1/review/queue", s.auth(s.queue))
+	m.HandleFunc("GET /api/v1/users/{handle}/badge.json", s.badge)
 	m.HandleFunc("GET /u/{handle}", s.profile)
 	m.HandleFunc("GET /review", s.console)
 	m.HandleFunc("GET /auth/login", s.oauthStart)
@@ -365,6 +366,31 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, st)
 }
 
+// badge serves a shields.io endpoint badge (https://img.shields.io/endpoint?url=...) with the
+// user's attended hours over the last 30 days, so a README can show "vibetime | 12.3 h".
+func (s *Server) badge(w http.ResponseWriter, r *http.Request) {
+	u, ok := s.visible(w, r)
+	if !ok {
+		return
+	}
+	st, err := s.UserStats(u)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	var sec int64
+	for _, v := range st.Projects {
+		sec += v
+	}
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	writeJSON(w, 200, map[string]any{
+		"schemaVersion": 1,
+		"label":         "vibetime",
+		"message":       fmt.Sprintf("%.1f h attended (30d)", float64(sec)/3600),
+		"color":         "blue",
+	})
+}
+
 // live streams stats over SSE whenever the user syncs.
 func (s *Server) live(w http.ResponseWriter, r *http.Request) {
 	u, ok := s.visible(w, r)
@@ -542,6 +568,8 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 		res.Risk += 25
 	}
 
+	extra := s.extraFlags(u, in, &res)
+
 	// Everything that reads credited and then writes submission + credited must be one
 	// transaction, or concurrent submits of the same window each see 0 already-credited.
 	tx, err := s.DB.Begin()
@@ -588,6 +616,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, u user) {
 			tx.Exec(`INSERT INTO credited(user_id, minute, seconds, submission_id) VALUES(?,?,?,?)`, u.ID, m, sec, id)
 		}
 	}
+	s.recordExtra(tx, u.ID, id, extra)
 	if err := tx.Commit(); err != nil {
 		fail(w, 500, err.Error())
 		return

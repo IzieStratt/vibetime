@@ -42,7 +42,7 @@ export function toEvent(channel: string, event: any, dir: string, now = new Date
     case "agent.start": {
       // Fired for every user prompt (typed, or a Ship / Push-to-Branch click that the client assembled).
       if (typeof event?.message !== "string" || event.message === "") return null;
-      return { ...base, kind: "prompt", prompt_text: event.message };
+      return { ...base, kind: "prompt", prompt_text: event.message, cwd: dir };
     }
     case "tool.call":
       return null; // the agent is about to run a tool; tool.result is the completed signal

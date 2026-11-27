@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IzieStratt/vibetime/internal/hooks"
 	"github.com/IzieStratt/vibetime/internal/store"
 )
 
@@ -175,5 +176,42 @@ func TestWakaTimeAICodingIsNotHuman(t *testing.T) {
 	post(t, ts.URL+"/api/v1/users/current/heartbeats.bulk", fmt.Sprintf(`[{"time":%f,"project":"site","category":"coding"},{"time":%f,"project":"site"}]`, base+200, base+260))
 	if m := summary(t, ts.URL); m["total_seconds"].(float64) != 60 {
 		t.Fatalf("%v", m)
+	}
+}
+
+func TestCwdScoresRelevanceAndIsNeverStored(t *testing.T) {
+	old := hooks.RelevanceFor
+	defer func() { hooks.RelevanceFor = old }()
+	var gotCwd string
+	hooks.RelevanceFor = func(cwd, prompt string) *int { gotCwd = cwd; r := 720; return &r }
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ts := httptest.NewServer((&Server{Store: s, Now: func() time.Time { return now }, MaxSkew: time.Hour}).Handler())
+	defer ts.Close()
+
+	body := fmt.Sprintf(`[{"time":%q,"kind":"prompt","project":"p","prompt_text":"fix the flush retry in syncer","cwd":"/work/p"}]`, now.Format(time.RFC3339))
+	if r := post(t, ts.URL+"/v1/events", body); r.StatusCode != 202 {
+		t.Fatal(r.Status)
+	}
+	evs, err := s.Range(now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("%v %v", evs, err)
+	}
+	if gotCwd != "/work/p" || evs[0].RelevancePM == nil || *evs[0].RelevancePM != 720 {
+		t.Fatalf("relevance not scored: cwd=%q %+v", gotCwd, evs[0])
+	}
+	if evs[0].Cwd != "" {
+		t.Fatal("cwd leaked into the store")
+	}
+	// a client-supplied score is kept as sent, and the cwd is still dropped
+	body = fmt.Sprintf(`[{"time":%q,"kind":"prompt","project":"p","prompt_text":"another long prompt here ok","relevance_pm":300,"cwd":"/work/p"}]`, now.Add(time.Second).Format(time.RFC3339))
+	post(t, ts.URL+"/v1/events", body)
+	evs, _ = s.Range(now.Add(-time.Minute), now.Add(time.Minute))
+	if len(evs) != 2 || *evs[1].RelevancePM != 300 || evs[1].Cwd != "" {
+		t.Fatalf("%+v", evs)
 	}
 }

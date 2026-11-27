@@ -28,7 +28,7 @@ test("agent.end reports model from last assistant usage", () => {
 
 test("agent.start carries the prompt", () => {
   assert.deepEqual(ev("agent.start", { message: "fix recoil" }), {
-    time: now.toISOString(), project: "cs2", harness: "amp", kind: "prompt", prompt_text: "fix recoil",
+    time: now.toISOString(), project: "cs2", harness: "amp", kind: "prompt", prompt_text: "fix recoil", cwd: "/home/kid/cs2",
   });
   assert.equal(ev("agent.start", { message: "" }), null);
 });

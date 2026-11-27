@@ -112,7 +112,7 @@ func (a *agent) sync(at time.Time, mins ...SyncMinute) map[string]int {
 // session runs an honest 90 minute session with live syncing.
 func (a *agent) session(project, salt string) {
 	m := t0
-	gaps := []int{3, 5, 4, 3, 6} // humans are irregular (fixed intervals are caught server-side)
+	gaps := []int{3, 5, 4, 3, 6} // humans are irregular (timing regularity is analysed server-side; fixed intervals)
 	for i := 0; i < 25; i++ {
 		if i > 0 {
 			m = m.Add(time.Duration(gaps[i%5]) * time.Minute)
@@ -501,5 +501,26 @@ func TestConcurrentSubmitNoDoubleCredit(t *testing.T) {
 	// exactly one submit should carry the verified time; the rest get 0 (already_credited)
 	if nonzero != 1 {
 		t.Fatalf("%d submits credited time, want 1 (total credited %d)", nonzero, creditedTotal)
+	}
+}
+
+func TestBadge(t *testing.T) {
+	e := newEnv(t)
+	tok := e.user("rowan")
+	a := e.agent(tok)
+	a.add(event.Event{Time: t0, Kind: event.Prompt, Project: "cs2"})
+	now := t0.Add(10 * time.Minute)
+	for i := 1; i <= 3; i++ {
+		a.sync(now, SyncMinute{Project: "cs2", Minute: now.Add(-time.Duration(i) * time.Minute).Unix(), Seconds: 60})
+	}
+	c, b := e.call("GET", "/api/v1/users/rowan/badge.json", "", nil)
+	var got map[string]any
+	json.Unmarshal(b, &got)
+	if c != 200 || got["schemaVersion"] != float64(1) || got["label"] != "vibetime" || got["message"] != "0.1 h attended (30d)" {
+		t.Fatalf("%d %s", c, b)
+	}
+	e.call("POST", "/api/v1/me", tok, map[string]bool{"public": false})
+	if c, _ := e.call("GET", "/api/v1/users/rowan/badge.json", "", nil); c != 404 {
+		t.Fatal("private user's badge must 404")
 	}
 }
