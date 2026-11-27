@@ -28,11 +28,13 @@ before(async () => {
   for (let i = 0; i < 50; i++) { try { await fetch(base + "/healthz"); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
   kid = (await (await fetch(base + "/api/v1/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ handle: "rowan" }) })).json()).token;
   // a never-synced bundle: valid chain, but unanchored, so it lands in the queue
-  const now = Date.now(), links = [];
+  // whole seconds, written without a fraction: Go omits a zero fraction (and trims trailing
+  // zeros), JS toISOString does not, so either would hash differently in the two
+  const now = Math.floor(Date.now() / 1000) * 1000, links = [];
   let prev = "0".repeat(64);
   const { createHash } = await import("node:crypto");
   for (let i = 0; i < 5; i++) {
-    const ev = { time: new Date(now - (10 - i) * 60000).toISOString(), kind: "prompt", project: "cs2", prompt_text: "please make the bomb timer beep faster near the end " + i };
+    const ev = { time: new Date(now - (10 - i) * 60000).toISOString().replace(".000Z", "Z"), kind: "prompt", project: "cs2", prompt_text: "please make the bomb timer beep faster near the end " + i };
     // mirror chain.Next: sha256(prev + JSON(redacted event)); field order matches the Go struct
     const norm = ev.prompt_text.toLowerCase().split(/\s+/).filter(Boolean).join(" ");
     const red = { time: ev.time, kind: ev.kind, project: ev.project, prompt_sha256: createHash("sha256").update(ev.prompt_text).digest("hex"), prompt_len: [...ev.prompt_text].length, prompt_norm: createHash("sha256").update(norm).digest("hex") };
@@ -41,7 +43,7 @@ before(async () => {
   }
   const sub = await call("/api/v1/submissions", kid, { device: "device-e2e-01", project: "cs2", repo: "", from: new Date(now - 3600000).toISOString(), to: new Date(now).toISOString(), prev: "0".repeat(64), links });
   assert.equal(sub.status, "needs_review", JSON.stringify(sub));
-  assert.equal(sub.result.valid, true, "JS chain must match Go chain");
+  assert.equal(sub.result.valid, true, "JS chain must match Go chain: " + JSON.stringify(sub.result));
   subId = sub.id;
   browser = await chromium.launch();
 });
