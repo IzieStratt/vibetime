@@ -43,7 +43,7 @@ before(async () => {
   }
   const sub = await call("/api/v1/submissions", kid, { device: "device-e2e-01", project: "cs2", repo: "", from: new Date(now - 3600000).toISOString(), to: new Date(now).toISOString(), prev: "0".repeat(64), links });
   assert.equal(sub.status, "needs_review", JSON.stringify(sub));
-  assert.equal(sub.result.valid, true, "JS chain must match Go chain");
+  assert.equal(sub.result.valid, true, "JS chain must match Go chain: " + JSON.stringify(sub.result));
   subId = sub.id;
   browser = await chromium.launch();
 });
