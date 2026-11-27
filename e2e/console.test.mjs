@@ -28,7 +28,9 @@ before(async () => {
   for (let i = 0; i < 50; i++) { try { await fetch(base + "/healthz"); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
   kid = (await (await fetch(base + "/api/v1/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ handle: "rowan" }) })).json()).token;
   // a never-synced bundle: valid chain, but unanchored, so it lands in the queue
-  const now = Date.now(), links = [];
+  // whole seconds: Go trims trailing zeros from fractional seconds, JS toISOString does not,
+  // so a time like .120Z would hash differently in the two (a flake)
+  const now = Math.floor(Date.now() / 1000) * 1000, links = [];
   let prev = "0".repeat(64);
   const { createHash } = await import("node:crypto");
   for (let i = 0; i < 5; i++) {
